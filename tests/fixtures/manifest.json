@@ -1,0 +1,66 @@
+{
+  "fixtures": {
+    "scholarship_sop": {
+      "file": "scholarship_sop.txt",
+      "process_type": "scholarship",
+      "planted_defects": {
+        "conflicting_values": {
+          "topic": "submission deadline",
+          "value_a": "31 March",
+          "section_a": "3. APPLICATION DEADLINE",
+          "value_b": "15 April",
+          "section_b": "5. EXTENDED SUBMISSION TIMEFRAME"
+        },
+        "missing_actor_step": {
+          "sentence": "The form is verified.",
+          "section": "4. INTAKE AND VERIFICATION",
+          "expected_actor": null
+        },
+        "vague_term": {
+          "term": "eligible students",
+          "section": "2. ELIGIBILITY CRITERIA"
+        },
+        "repeated_step": {
+          "sentence": "The scholarship clerk cross-checks student income certificates against the national tax database.",
+          "occurrences": ["Section 4", "Section 6"]
+        },
+        "missing_piece": "No appeal procedure for rejected applicants"
+      },
+      "clear_facts": [
+        "minimum cumulative grade point average of 8.5",
+        "thirty calendar days"
+      ]
+    },
+    "hostel_allotment": {
+      "file": "hostel_allotment_policy.txt",
+      "process_type": "hostel",
+      "planted_defects": {
+        "conflicting_values": {
+          "topic": "submission deadline",
+          "value_a": "15 July",
+          "section_a": "3. APPLICATION WINDOW AND DUE DATE",
+          "value_b": "05 August",
+          "section_b": "5. LATE APPLICATION DEADLINE"
+        },
+        "missing_actor_step": {
+          "sentence": "The room key is issued.",
+          "section": "4. DOCUMENTATION AND ALLOTMENT",
+          "expected_actor": null
+        },
+        "vague_term": {
+          "term": "eligible students",
+          "section": "2. GENERAL ALLOTMENT GUIDELINES"
+        },
+        "repeated_step": {
+          "sentence": "The hostel supervisor verifies the student identity card against the active enrollment roster.",
+          "occurrences": ["Section 4", "Section 6"]
+        },
+        "missing_piece": "No room change appeal path"
+      },
+      "clear_facts": [
+        "full-time degree programs",
+        "hostel caretaker inspects room inventory"
+      ]
+    }
+  }
+}

@@ -1,0 +1,19 @@
+[theme]
+base = "light"
+primaryColor = "#3568F5"
+backgroundColor = "#F5F7FB"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#15243A"
+font = "sans serif"
+
+[server]
+headless = true
+port = 8501
+# XSRF protection is on. It was disabled, which removed a protection nothing in
+# the brief asked to drop (REVIEW_REPORT.md F14). The UI talks to FastAPI with a
+# Bearer token over HTTPX, not with browser form posts, so this costs nothing.
+enableXsrfProtection = true
+enableCORS = true
+
+[browser]
+gatherUsageStats = false
