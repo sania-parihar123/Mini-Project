@@ -21,6 +21,13 @@ from app.core.config import settings, is_test_environment
 logger = logging.getLogger("processfoundry.repository")
 
 
+def _jload(v, default=None):
+    """JSONB columns arrive already parsed on PostgreSQL; TEXT on SQLite."""
+    if v is None or v == "":
+        return default
+    return json.loads(v) if isinstance(v, (str, bytes)) else v
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -1717,7 +1724,7 @@ class DatabaseRepository:
                 "project_id": str(r["project_id"] if not self.use_postgres else r[1]),
                 "rule_key": r["rule_key"] if not self.use_postgres else r[2],
                 "description": r["description"] if not self.use_postgres else r[3],
-                "condition_json": json.loads(r["condition_json"] if not self.use_postgres else r[4]),
+                "condition_json": _jload(r["condition_json"] if not self.use_postgres else r[4]),
                 "status": r["status"] if not self.use_postgres else r[5],
                 "supersedes_rule_id": str(r["supersedes_rule_id"] if not self.use_postgres else r[6]) if (r["supersedes_rule_id"] if not self.use_postgres else r[6]) else None,
                 "approved_by": str(r["approved_by"] if not self.use_postgres else r[7]) if (r["approved_by"] if not self.use_postgres else r[7]) else None,
@@ -1889,8 +1896,8 @@ class DatabaseRepository:
                 "id": str(r["id"] if not self.use_postgres else r[0]),
                 "project_id": str(r["project_id"] if not self.use_postgres else r[1]),
                 "version": r["version"] if not self.use_postgres else r[2],
-                "as_is_json": json.loads(r["as_is_json"] if not self.use_postgres else r[3]) if (r["as_is_json"] if not self.use_postgres else r[3]) else None,
-                "to_be_json": json.loads(r["to_be_json"] if not self.use_postgres else r[4]) if (r["to_be_json"] if not self.use_postgres else r[4]) else None,
+                "as_is_json": _jload(r["as_is_json"] if not self.use_postgres else r[3]),
+                "to_be_json": _jload(r["to_be_json"] if not self.use_postgres else r[4]),
                 "status": r["status"] if not self.use_postgres else r[5],
                 "approved_by": str(r["approved_by"] if not self.use_postgres else r[6]) if (r["approved_by"] if not self.use_postgres else r[6]) else None,
                 "created_at": str(r["created_at"] if not self.use_postgres else r[7]),
@@ -1994,9 +2001,9 @@ class DatabaseRepository:
                     "actor": r["actor"] if not self.use_postgres else r[4],
                     "step_type": r["step_type"] if not self.use_postgres else r[5],
                     "sequence": r["sequence"] if not self.use_postgres else r[6],
-                    "inputs": json.loads(r["inputs"] if not self.use_postgres else r[7]),
-                    "outputs": json.loads(r["outputs"] if not self.use_postgres else r[8]),
-                    "unknowns": json.loads(r["unknowns"] if not self.use_postgres else r[9]),
+                    "inputs": _jload(r["inputs"] if not self.use_postgres else r[7], []),
+                    "outputs": _jload(r["outputs"] if not self.use_postgres else r[8], []),
+                    "unknowns": _jload(r["unknowns"] if not self.use_postgres else r[9], []),
                     "automation": r["automation"] if not self.use_postgres else r[10],
                     "human_approval_required": bool(r["human_approval_required"] if not self.use_postgres else r[11]),
                     "evidence_keys": ekeys
@@ -2386,7 +2393,7 @@ class DatabaseRepository:
                 "title": r["title"] if not self.use_postgres else r[4],
                 "statement": r["statement"] if not self.use_postgres else r[5],
                 "priority": r["priority"] if not self.use_postgres else r[6],
-                "acceptance_criteria": json.loads(r["acceptance_criteria"] if not self.use_postgres else r[7]),
+                "acceptance_criteria": _jload(r["acceptance_criteria"] if not self.use_postgres else r[7]),
                 "status": r["status"] if not self.use_postgres else r[8],
                 "approved_by": str(r["approved_by"] if not self.use_postgres else r[9]) if (r["approved_by"] if not self.use_postgres else r[9]) else None,
                 "created_at": str(r["created_at"] if not self.use_postgres else r[10]),
@@ -2534,7 +2541,7 @@ class DatabaseRepository:
                 "project_id": str(r["project_id"] if not self.use_postgres else r[1]),
                 "artifact_type": r["artifact_type"] if not self.use_postgres else r[2],
                 "version": r["version"] if not self.use_postgres else r[3],
-                "content_json": json.loads(r["content_json"] if not self.use_postgres else r[4]) if (r["content_json"] if not self.use_postgres else r[4]) else None,
+                "content_json": _jload(r["content_json"] if not self.use_postgres else r[4], None),
                 "markdown": r["markdown"] if not self.use_postgres else r[5],
                 "status": r["status"] if not self.use_postgres else r[6],
                 "approved_by": str(r["approved_by"] if not self.use_postgres else r[7]) if (r["approved_by"] if not self.use_postgres else r[7]) else None,
@@ -2555,7 +2562,7 @@ class DatabaseRepository:
                 "project_id": str(r["project_id"] if not self.use_postgres else r[1]),
                 "artifact_type": r["artifact_type"] if not self.use_postgres else r[2],
                 "version": r["version"] if not self.use_postgres else r[3],
-                "content_json": json.loads(r["content_json"] if not self.use_postgres else r[4]) if (r["content_json"] if not self.use_postgres else r[4]) else None,
+                "content_json": _jload(r["content_json"] if not self.use_postgres else r[4], None),
                 "markdown": r["markdown"] if not self.use_postgres else r[5],
                 "status": r["status"] if not self.use_postgres else r[6],
                 "approved_by": str(r["approved_by"] if not self.use_postgres else r[7]) if (r["approved_by"] if not self.use_postgres else r[7]) else None,
@@ -2646,7 +2653,7 @@ class DatabaseRepository:
                 "kind": r["kind"] if not self.use_postgres else r[4],
                 "scenario": r["scenario"] if not self.use_postgres else r[5],
                 "preconditions": r["preconditions"] if not self.use_postgres else r[6],
-                "steps": json.loads(r["steps"] if not self.use_postgres else r[7]),
+                "steps": _jload(r["steps"] if not self.use_postgres else r[7]),
                 "expected_result": r["expected_result"] if not self.use_postgres else r[8],
                 "created_at": str(r["created_at"] if not self.use_postgres else r[9]),
                 "requirement_key": r["requirement_key"] if not self.use_postgres else r[10]
@@ -2690,7 +2697,7 @@ class DatabaseRepository:
                 "project_id": str(r["project_id"] if not self.use_postgres else r[1]),
                 "status": r["status"] if not self.use_postgres else r[2],
                 "current_node": r["current_node"] if not self.use_postgres else r[3],
-                "state_json": json.loads(r["state_json"] if not self.use_postgres else r[4]) if (r["state_json"] if not self.use_postgres else r[4]) else {},
+                "state_json": _jload(r["state_json"] if not self.use_postgres else r[4], {}),
                 "last_error": r["last_error"] if not self.use_postgres else r[5],
                 "started_by": str(r["started_by"] if not self.use_postgres else r[6]) if (r["started_by"] if not self.use_postgres else r[6]) else None,
                 "created_at": str(r["created_at"] if not self.use_postgres else r[7]),
@@ -2739,7 +2746,7 @@ class DatabaseRepository:
 
     def update_run_state(self, run_id: str, status: str, current_node: Optional[str] = None, state_json: Optional[Dict[str, Any]] = None, last_error: Optional[str] = None):
         updated_at = now_iso()
-        s_json = json.dumps(state_json) if state_json else None
+        s_json = json.dumps(state_json, default=str) if state_json else None
         with self.get_connection() as conn:
             cur = conn.cursor()
             if self.use_postgres:

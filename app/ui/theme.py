@@ -42,6 +42,26 @@ def apply_theme():
         z-index: 0 !important;
     }
     footer { display: none !important; }
+    /* The header above is collapsed and click-through, and Streamlit keeps the
+       sidebar open/close arrow inside it. Without this, a collapsed sidebar
+       cannot be reopened. Keep the arrow visible and clickable. */
+    [data-testid="stSidebarCollapsedControl"],
+    [data-testid="collapsedControl"],
+    [data-testid="stExpandSidebarButton"],
+    [data-testid="stSidebarCollapseButton"] {
+        display: flex !important;
+        visibility: visible !important;
+        pointer-events: auto !important;
+        z-index: 999999 !important;
+    }
+    [data-testid="stSidebarCollapsedControl"] button,
+    [data-testid="collapsedControl"] button,
+    [data-testid="stExpandSidebarButton"] {
+        color: #101f36 !important;
+        background: #ffffff !important;
+        border: 1px solid #e5eaf1 !important;
+        border-radius: 8px !important;
+    }
     /* Streamlit's built-in toolbar (the Deploy button, the hamburger menu, the
        "Running" status and the thin decoration bar) is absolutely positioned
        over the top-right of the page, which is exactly where .pf-topbar shows
@@ -69,6 +89,28 @@ def apply_theme():
         padding-top: 24px !important;
         padding-bottom: 48px !important;
         max-width: 1440px !important;
+    }
+
+    /* Always keep the sidebar open. In newer Streamlit the reopen arrow lives
+       inside the toolbar that this theme removes, so a collapsed sidebar could
+       never be brought back. Force it open and drop the collapse arrow. */
+    section[data-testid="stSidebar"] {
+        transform: none !important;
+        margin-left: 0 !important;
+        visibility: visible !important;
+        min-width: 300px !important;
+        width: 300px !important;
+    }
+    section[data-testid="stSidebar"][aria-expanded="false"] {
+        transform: none !important;
+        margin-left: 0 !important;
+        display: flex !important;
+    }
+    [data-testid="stSidebarCollapseButton"],
+    [data-testid="stSidebarCollapsedControl"],
+    [data-testid="collapsedControl"],
+    [data-testid="stExpandSidebarButton"] {
+        display: none !important;
     }
 
     /* Sidebar Styling */

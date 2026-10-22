@@ -67,13 +67,19 @@ class ProcessDiscoveryAgent:
                 schema=AsIsDiscoveryOutput,
                 system_instruction="Build the As-Is model strictly grounded in evidence. Never guess an actor if not explicitly stated."
             )
-        except Exception as e:
-            logger.error(f"Process discovery model call failed: {e}")
-            output = AsIsDiscoveryOutput(
-                process_name="Discovered Process",
-                steps=[],
-                overall_unknowns=["Discovery model execution error"]
+        # except Exception as e:
+        #     logger.error(f"Process discovery model call failed: {e}")
+        #     output = AsIsDiscoveryOutput(
+        #         process_name="Discovered Process",
+        #         steps=[],
+        #         overall_unknowns=["Discovery model execution error"]
+        #     )
+        except Exception:
+            logger.exception(
+                "As-Is discovery failed for project %s",
+                project_id
             )
+            raise
 
         # A changed evidence set means a new version, not an overwrite, and
         # anything generated from the previous version becomes stale.
