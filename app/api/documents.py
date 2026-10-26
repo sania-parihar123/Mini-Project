@@ -304,7 +304,8 @@ def get_document_understanding(document_id: str, user: dict = Depends(get_curren
     prompt = (
         f"Analyze this institutional document:\n"
         f"{llm_service.wrap_source(combined_text)}\n\n"
-        "Extract the verified ground-truth facts across these categories:\n"
+        "The source document may be written in Hindi, Marathi, English, or another language.\n"
+        "Extract the verified ground-truth facts across these categories, formulating all statements and summaries in ENGLISH:\n"
         "1. Document type\n"
         "2. Summary\n"
         "3. Required documents\n"
@@ -313,9 +314,10 @@ def get_document_understanding(document_id: str, user: dict = Depends(get_curren
         "6. Dates and deadlines\n"
         "7. People, roles, and responsibilities\n\n"
         "Rules:\n"
-        "- For every fact, include the exact verbatim supporting quotation and page reference from the source.\n"
+        "- Provide statements and descriptions in ENGLISH.\n"
+        "- For every fact, include the exact verbatim supporting quotation ('exact_quote') and page reference from the source in its original language without translation.\n"
         "- Clearly distinguish extracted facts (is_extracted_fact=True) from interpretations (is_extracted_fact=False).\n"
-        "- If information for a category is missing or not stated in the source, list it in missing_or_uncertain_information.\n"
+        "- If information for a category is missing or not stated in the source, list it in missing_or_uncertain_information in English.\n"
         "- Never invent quotes or present unsupported details as facts."
     )
 

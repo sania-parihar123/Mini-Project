@@ -18,13 +18,15 @@ class BusinessRuleAgent:
 
         prompt = (
             f"Analyze the following process document section titled '{section.get('section_title', '')}'.\n"
+            f"The source content may be written in Hindi, Marathi, English, or another language.\n"
             f"Extract all formal business rules, eligibility criteria, deadlines, fee requirements, and approval conditions.\n"
+            f"Formulate all rule details (description, condition, outcome, exceptions) in ENGLISH.\n"
             f"For each rule, specify:\n"
-            f"- description: clear rule statement\n"
-            f"- condition: when this rule applies\n"
-            f"- outcome: requirement, limitation, or consequence\n"
-            f"- exceptions: any explicitly listed exceptions\n"
-            f"- evidence_quote: EXACT verbatim sentence from the source text\n\n"
+            f"- description: clear rule statement in English\n"
+            f"- condition: when this rule applies in English\n"
+            f"- outcome: requirement, limitation, or consequence in English\n"
+            f"- exceptions: any explicitly listed exceptions in English\n"
+            f"- evidence_quote: EXACT verbatim sentence from the source text in its original language without translation\n\n"
             f"{llm_service.wrap_source(section_text)}"
         )
 
@@ -32,7 +34,7 @@ class BusinessRuleAgent:
             extraction = llm_service.complete_json(
                 prompt=prompt,
                 schema=SectionRulesExtraction,
-                system_instruction="Extract explicit business rules. Ground each rule in an exact quote."
+                system_instruction="Extract explicit business rules in English. Ground each rule in an exact verbatim quote from the original source without translation."
             )
         except Exception as e:
             logger.warning(f"Rule extraction model call failed for section {section.get('id')}: {e}")
@@ -130,13 +132,14 @@ class BusinessRuleAgent:
         skipped, so a re-run costs no model calls and writes no duplicates.
         """
         done = db.sections_already_mined_for_rules(project_id, EXTRACTOR_VERSION)
-        all_rules = list(db.list_project_business_rules(project_id)) if done else []
+        all_rules = [r for r in db.list_project_business_rules(project_id) if r.get("status") != "superseded"] if done else []
         if done:
             logger.info(f"Reusing stored rules for {len(done)} unchanged section(s).")
 
         for sec in document_sections:
             if str(sec["id"]) in done:
                 continue
+            db.supersede_section_rules(sec["id"])
             sec_rules = self.extract_section_rules(project_id, sec, evidence_items)
             all_rules.extend(sec_rules)
         return all_rules

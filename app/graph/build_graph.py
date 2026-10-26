@@ -199,7 +199,7 @@ def to_be_node(state: ProcessFoundryState) -> ProcessFoundryState:
         latest = db.get_latest_process_version(pid)
         if latest:
             steps = db.list_process_steps(latest["id"])
-    rules = db.list_project_business_rules(pid)
+    rules = [r for r in db.list_project_business_rules(pid) if r.get("status") != "superseded"]
     facts = db.list_verified_facts(pid)
 
     to_be = redesign_agent.redesign_process(pid, steps, rules, facts)
@@ -257,7 +257,7 @@ def requirements_node(state: ProcessFoundryState) -> ProcessFoundryState:
         latest = db.get_latest_process_version(pid)
         if latest:
             steps = db.list_process_steps(latest["id"])
-    rules = db.list_project_business_rules(pid)
+    rules = [r for r in db.list_project_business_rules(pid) if r.get("status") != "superseded"]
     facts = db.list_verified_facts(pid)
     to_be = state.get("to_be_process")
 

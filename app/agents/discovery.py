@@ -1,6 +1,7 @@
 """ProcessFoundry AI: As-Is Process Discovery Agent (A3)."""
 import hashlib
 import logging
+import re
 from typing import List, Dict, Any, Optional
 
 from app.schemas.process import AsIsDiscoveryOutput
@@ -55,17 +56,18 @@ class ProcessDiscoveryAgent:
             f"Synthesize the following verified evidence into sequential steps:\n"
             f"{llm_service.wrap_source(evidence_summary)}\n\n"
             f"CRITICAL RULES:\n"
-            f"1. If a step's source sentence does NOT explicitly name an actor (e.g. 'The form is verified', 'Documents are checked'), "
+            f"1. Generate all process names, step names, actor descriptions, and unknowns in ENGLISH.\n"
+            f"2. If a step's source sentence does NOT explicitly name an actor (e.g. 'The form is verified', 'Documents are checked'), "
             f"you MUST set 'actor': null and add 'actor not stated' to 'unknowns'. DO NOT GUESS OR INVENT AN ACTOR.\n"
-            f"2. Link each step to its supporting quote from the evidence.\n"
-            f"3. Mark repeated or duplicate steps if observed in the source text."
+            f"3. Link each step to its supporting quote from the evidence in its EXACT original language without translation.\n"
+            f"4. Mark repeated or duplicate steps if observed in the source text."
         )
 
         try:
             output = llm_service.complete_json(
                 prompt=prompt,
                 schema=AsIsDiscoveryOutput,
-                system_instruction="Build the As-Is model strictly grounded in evidence. Never guess an actor if not explicitly stated."
+                system_instruction="Build the As-Is model in English strictly grounded in evidence. Keep supporting evidence quotes verbatim in their original language. Never guess an actor if not explicitly stated."
             )
         # except Exception as e:
         #     logger.error(f"Process discovery model call failed: {e}")
@@ -101,8 +103,8 @@ class ProcessDiscoveryAgent:
         # Map quotes back to evidence IDs
         quote_to_ev_id = {e["quote"].strip().lower(): e["id"] for e in evidence_items}
         for e in evidence_items:
-            # Also partial match
-            for word in e["quote"].split("."):
+            # Also partial match across standard and Devanagari sentence boundaries
+            for word in re.split(r"[.\u0964\u0965\n]+", e["quote"]):
                 if len(word.strip()) > 15:
                     quote_to_ev_id[word.strip().lower()] = e["id"]
 

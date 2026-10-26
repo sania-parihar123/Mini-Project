@@ -37,17 +37,18 @@ class RedesignAgent:
             f"Business Rules:\n{llm_service.wrap_source(rules_summary)}\n\n"
             f"Human-Confirmed Facts:\n{llm_service.wrap_source(facts_summary or 'No extra facts.')}\n\n"
             f"Redesign the process for digital efficiency:\n"
-            f"1. Replace manual paper submissions with digital portal entry.\n"
-            f"2. Classify each step's automation: 'deterministic', 'ai_assisted', 'human', or 'hybrid'.\n"
-            f"3. Mark 'human_approval_required: true' for official financial, exception, or eligibility decisions.\n"
-            f"4. Eliminate redundant verification or repeated manual handoffs."
+            f"1. Produce all outputs, step names, summaries, and descriptions in ENGLISH.\n"
+            f"2. Replace manual paper submissions with digital portal entry.\n"
+            f"3. Classify each step's automation: 'deterministic', 'ai_assisted', 'human', or 'hybrid'.\n"
+            f"4. Mark 'human_approval_required: true' for official financial, exception, or eligibility decisions.\n"
+            f"5. Eliminate redundant verification or repeated manual handoffs."
         )
 
         try:
             output = llm_service.complete_json(
                 prompt=prompt,
                 schema=ToBeRedesignOutput,
-                system_instruction="Propose an optimized To-Be process with strict automation classification. Critical business decisions must retain human approval."
+                system_instruction="Propose an optimized To-Be process in English with strict automation classification. Critical business decisions must retain human approval."
             )
         except Exception as e:
             logger.error(f"Process redesign model call failed: {e}")

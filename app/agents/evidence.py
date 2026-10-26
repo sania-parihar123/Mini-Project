@@ -10,7 +10,7 @@ logger = logging.getLogger("processfoundry.agent.evidence")
 
 # Bump this when the evidence or rule prompts change, to force re-extraction of
 # sections that were mined by an older version.
-EXTRACTOR_VERSION = "v1"
+EXTRACTOR_VERSION = "v2"
 
 class EvidenceAgent:
     def extract_section_evidence(self, project_id: str, section: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -21,8 +21,11 @@ class EvidenceAgent:
 
         prompt = (
             f"Analyze the following process document section titled '{section.get('section_title', '')}'.\n"
+            f"The source content may be written in Hindi, Marathi, English, or another language.\n"
             f"Extract factual statements (steps, actors, business rules, deadlines, fees, forms).\n"
-            f"CRITICAL REQUIREMENT: For every claim, provide a 'quote' that is an EXACT, verbatim, word-for-word substring from the section text.\n\n"
+            f"State each 'claim' in English.\n"
+            f"CRITICAL REQUIREMENT: For every claim, provide a 'quote' that is an EXACT, verbatim, word-for-word substring from the section text in its original source language.\n"
+            f"Preserve all original Unicode characters, punctuation, and wording. Never translate, normalize, or alter the quote.\n\n"
             f"{llm_service.wrap_source(section_text)}"
         )
 
@@ -30,20 +33,19 @@ class EvidenceAgent:
             extraction = llm_service.complete_json(
                 prompt=prompt,
                 schema=SectionEvidenceExtraction,
-                system_instruction="Extract only factual claims. The quote must be an exact verbatim substring from the source."
+                system_instruction="Extract only factual claims in English. The quote must be an exact verbatim substring from the source in its original language without translation."
             )
         except Exception as e:
             logger.warning(f"Evidence extraction LLM call failed for section {section.get('id')}: {e}")
             return []
 
         saved_evidence = []
-        for c in extraction.claims:
-            quote = c.quote.strip()
-            # Deterministic code check: quote must be a verbatim substring
-            if not quote or quote not in section_text:
-                logger.warning(f"Discarding unverified claim: quote '{quote[:40]}...' is not a verbatim substring of section.")
-                continue
+        verified_claims = [c for c in extraction.claims if c.quote.strip() and c.quote.strip() in section_text]
+        if verified_claims:
+            db.supersede_section_evidence(section["id"])
 
+        for c in verified_claims:
+            quote = c.quote.strip()
             try:
                 evd = db.save_evidence_item(
                     project_id=project_id,

@@ -16,6 +16,7 @@ and wording are all derived from the stored text (Appendix rule 4).
 import hashlib
 import logging
 import re
+import unicodedata
 from typing import List, Dict, Any, Optional, Tuple
 
 from app.repositories.database import db
@@ -23,7 +24,18 @@ from app.repositories.database import db
 logger = logging.getLogger("processfoundry.agent.gaps")
 
 VAGUE_TERMS = [
-    "eligible", "appropriate", "as soon as possible", "timely", "proper", "reasonable", "as deemed fit"
+    "eligible", "appropriate", "as soon as possible", "timely", "proper", "reasonable", "as deemed fit",
+    # Hindi and Marathi vague subjective criteria
+    "\u092a\u093e\u0924\u094d\u0930",       # patra (eligible)
+    "\u092f\u094b\u0917\u094d\u092f",       # yogya (appropriate)
+    "\u0932\u0935\u0915\u0930\u093e\u0924 \u0932\u0935\u0915\u0930",  # lavkarat lavkar (ASAP)
+    "\u092f\u0925\u093e\u0936\u0940\u0918\u094d\u0930",  # yathasighra (promptly)
+    "\u0935\u093e\u091c\u0935\u0940",       # vajavi (reasonable)
+    "\u0909\u091a\u093f\u0924",             # uchit (appropriate)
+    "\u0935\u0947\u0933\u0947\u0935\u0930", # velevara (on time)
+    "\u0938\u092e\u092f\u092c\u0926\u094d\u0927",  # samayabaddha (time-bound)
+    "\u092f\u094b\u0917\u094d\u092f \u0935\u093e\u091f\u0947\u0932 \u0924\u094d\u092f\u093e\u0928\u0941\u0938\u093e\u0930",  # as deemed fit
+    "\u092f\u0925\u093e\u092f\u094b\u0917\u094d\u092f",  # yathayogya (as appropriate)
 ]
 
 CRITICAL_KINDS = ("conflicting_rules", "missing_actor")
@@ -34,37 +46,132 @@ CRITICAL_KINDS = ("conflicting_rules", "missing_actor")
 # table; no process name appears anywhere in it.
 # ---------------------------------------------------------------------------
 SUBJECT_CUES: Dict[str, Tuple[str, ...]] = {
-    "deadline": ("deadline", "due date", "last date", "submit", "submitted", "submission",
-                 "closes", "closing", "cut-off", "cutoff", "no later", "timeframe",
-                 "accepted until", "until", "apply by", "lodge", "entertained", "late"),
-    "fee": ("fee", "fees", "charge", "charges", "payment", "amount payable", "cost",
-            "rupees", "inr", "usd", "dollar"),
-    "limit": ("minimum", "maximum", "at least", "at most", "no more than", "no fewer than",
-              "limit", "cap", "quota", "threshold", "percentage", "percent", "gpa",
-              "grade point average", "marks", "score"),
-    "duration": ("within", "days", "weeks", "months", "working days", "calendar days",
-                 "duration", "period"),
+    "deadline": (
+        "deadline", "due date", "last date", "submit", "submitted", "submission",
+        "closes", "closing", "cut-off", "cutoff", "no later", "timeframe",
+        "accepted until", "until", "apply by", "lodge", "entertained", "late",
+        # Hindi and Marathi cues
+        "\u0905\u0902\u0924\u093f\u092e \u0924\u093e\u0930\u0940\u0916",     # antim tarik (last date)
+        "\u0936\u0947\u0935\u091f\u091a\u0940 \u0924\u093e\u0930\u0940\u0916",  # shevtachi tarik
+        "\u092e\u0941\u0926\u0924",             # mudat (deadline)
+        "\u0905\u0902\u0924\u093f\u092e \u092e\u0941\u0926\u0924",           # antim mudat
+        "\u0905\u0902\u0924\u093f\u092e \u0926\u093f\u0928\u093e\u0902\u0915",  # antim dinank
+        "\u0938\u093e\u0926\u0930",             # sadar (submit)
+        "\u0938\u094d\u0935\u0940\u0915\u093e\u0930",  # swikara (accept)
+        "\u0905\u0930\u094d\u091c \u0915\u0930\u0923\u094d\u092f\u093e\u091a\u0940 \u0924\u093e\u0930\u0940\u0916",  # arj karnyachi tarik
+        "\u0935\u093f\u0932\u0902\u092c",       # vilamb (delay/late)
+        "\u0928\u0902\u0924\u0930",             # nantar (after)
+    ),
+    "fee": (
+        "fee", "fees", "charge", "charges", "payment", "amount payable", "cost",
+        "rupees", "inr", "usd", "dollar",
+        # Hindi and Marathi cues
+        "\u0936\u0941\u0932\u094d\u0915",       # shulka (fee)
+        "\u092b\u0940",                         # fee
+        "\u0930\u0915\u094d\u0915\u092e",       # rakkam (amount)
+        "\u0930\u0941\u092a\u092f\u0947",       # rupaye (rupees)
+        "\u0930\u0941\u092a\u092f\u093e",       # rupaya
+        "\u0930\u0941.",                        # ru. (rupee abbr)
+        "\u0930\u0941",                         # ru
+        "\u0916\u0930\u094d\u091a",             # kharch (expense)
+        "\u0926\u0947\u092f",                   # dey (payable)
+    ),
+    "limit": (
+        "minimum", "maximum", "at least", "at most", "no more than", "no fewer than",
+        "limit", "cap", "quota", "threshold", "percentage", "percent", "gpa",
+        "grade point average", "marks", "score",
+        # Hindi and Marathi cues
+        "\u0915\u093f\u092e\u093e\u0928",       # kiman (minimum)
+        "\u0915\u092e\u093e\u0932",             # kamal (maximum)
+        "\u092e\u0930\u094d\u092f\u093e\u0926\u093e",  # maryada (limit)
+        "\u091f\u0915\u094d\u0915\u0947",       # takke (percent)
+        "\u091f\u0915\u094d\u0915\u0947\u0935\u093e\u0930\u0940",  # takkevari (percentage)
+        "\u0917\u0941\u0923",                   # gun (marks)
+        "\u0915\u092e\u0940\u0924 \u0915\u092e\u0940",  # kamit kami (at least)
+        "\u091c\u093e\u0938\u094d\u0924\u0940\u0924 \u091c\u093e\u0938\u094d\u0924",  # jastit jast (at most)
+    ),
+    "duration": (
+        "within", "days", "weeks", "months", "working days", "calendar days",
+        "duration", "period",
+        # Hindi and Marathi cues
+        "\u0915\u093e\u0932\u093e\u0935\u0927\u0940",  # kalavadhi (period)
+        "\u0926\u093f\u0935\u0938",             # divas (days)
+        "\u0906\u0920\u0935\u0921\u0947",       # aathavade (weeks)
+        "\u092e\u0939\u093f\u0928\u0947",       # mahine (months)
+        "\u0915\u093e\u0930\u094d\u092f\u0926\u093f\u0928",  # karyadina (working days)
+        "\u0915\u093e\u092e\u093e\u091a\u0947 \u0926\u093f\u0935\u0938",  # kamache divas
+        "\u0926\u093f\u0935\u0938\u093e\u0902\u091a\u094d\u092f\u093e \u0906\u0924",  # divasanachya aat (within days)
+        "\u092e\u0941\u0926\u0924\u0940\u0924",  # mudatit (within deadline)
+    ),
 }
 
 # Value patterns, tried in order. The subject a value belongs to is decided by
-# the surrounding words, not by the pattern.
+# the surrounding words, not by the pattern. Supports English, Hindi, and Marathi formats.
+_MONTHS_EN = r"january|february|march|april|may|june|july|august|september|october|november|december"
+_MONTHS_HI_MR = (
+    # Marathi month names
+    "\u091c\u093e\u0928\u0947\u0935\u093e\u0930\u0940|\u092b\u0947\u092c\u094d\u0930\u0941\u0935\u093e\u0930\u0940"
+    "|\u092e\u093e\u0930\u094d\u091a|\u090f\u092a\u094d\u0930\u093f\u0932|\u092e\u0947|\u091c\u0942\u0928"
+    "|\u091c\u0941\u0932\u0948|\u0911\u0917\u0938\u094d\u091f|\u0938\u092a\u094d\u091f\u0947\u0902\u092c\u0930"
+    "|\u0911\u0915\u094d\u091f\u094b\u092c\u0930|\u0928\u094b\u0935\u094d\u0939\u0947\u0902\u092c\u0930"
+    "|\u0921\u093f\u0938\u0947\u0902\u092c\u0930|"
+    # Hindi month names
+    "\u091c\u0928\u0935\u0930\u0940|\u092b\u0930\u0935\u0930\u0940|\u092b\u093c\u0930\u0935\u0930\u0940"
+    "|\u092e\u093e\u0930\u094d\u091a|\u0905\u092a\u094d\u0930\u0948\u0932|\u092e\u0908|\u091c\u0942\u0928"
+    "|\u091c\u0941\u0932\u093e\u0908|\u0905\u0917\u0938\u094d\u0924|\u0938\u093f\u0924\u0902\u092c\u0930"
+    "|\u0905\u0915\u094d\u091f\u0942\u092c\u0930|\u0928\u0935\u0902\u092c\u0930|\u0926\u093f\u0938\u0902\u092c\u0930"
+)
+_MONTHS_ALL = rf"(?:{_MONTHS_EN}|{_MONTHS_HI_MR})"
+
 VALUE_PATTERNS: Tuple[Tuple[str, str], ...] = (
-    ("date", r"\b\d{1,2}\s+(?:january|february|march|april|may|june|july|august|september|october|november|december)\b"),
-    ("date", r"\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}\b"),
-    ("date", r"\b\d{1,2}/\d{1,2}/\d{2,4}\b"),
-    ("money", r"(?:rs\.?|inr|usd|\$|₹)\s?\d[\d,]*(?:\.\d+)?"),
-    ("money", r"\b\d[\d,]*(?:\.\d+)?\s*(?:rupees|dollars)\b"),
-    ("number", r"\b\d+(?:\.\d+)?\s*(?:per cent|percent|%)\b"),
-    ("number", r"\b\d+(?:\.\d+)?\s*(?:calendar\s+days|working\s+days|days|weeks|months|years)\b"),
-    ("number", r"\b\d+(?:\.\d+)?\b"),
+    ("date", rf"(?<![\w\u0900-\u097F])[0-9\u0966-\u096F]{{1,2}}\s+{_MONTHS_ALL}(?![\w\u0900-\u097F])"),
+    ("date", rf"(?<![\w\u0900-\u097F]){_MONTHS_ALL}\s+[0-9\u0966-\u096F]{{1,2}}(?![\w\u0900-\u097F])"),
+    ("date", r"(?<![\w\u0900-\u097F])[0-9\u0966-\u096F]{1,2}[/-][0-9\u0966-\u096F]{1,2}[/-][0-9\u0966-\u096F]{2,4}(?![\w\u0900-\u097F])"),
+    ("money", r"(?:rs\.?|inr|usd|\$|\u20b9|\u0930\u0941\.?|\u0930\u0941)\s?[0-9\u0966-\u096F][0-9\u0966-\u096F,]*(?:\.[0-9\u0966-\u096F]+)?"),
+    ("money", r"(?<![\w\u0900-\u097F])[0-9\u0966-\u096F][0-9\u0966-\u096F,]*(?:\.[0-9\u0966-\u096F]+)?\s*(?:rupees|dollars|\u0930\u0941\u092a\u092f\u0947|\u0930\u0941\u092a\u092f\u093e)(?![\w\u0900-\u097F])"),
+    ("number", r"(?<![\w\u0900-\u097F])[0-9\u0966-\u096F]+(?:\.[0-9\u0966-\u096F]+)?\s*(?:per cent|percent|%|\u091f\u0915\u094d\u0915\u0947|\u091f\u0915\u094d\u0915\u0947\u0935\u093e\u0930\u0940)(?![\w\u0900-\u097F])"),
+    ("number", r"(?<![\w\u0900-\u097F])[0-9\u0966-\u096F]+(?:\.[0-9\u0966-\u096F]+)?\s*(?:calendar\s+days|working\s+days|days|weeks|months|years|\u0926\u093f\u0935\u0938|\u0915\u093e\u0930\u094d\u092f\u0926\u093f\u0928|\u0906\u0920\u0935\u0921\u0947|\u092e\u0939\u093f\u0928\u0947|\u0935\u0930\u094d\u0937)(?![\w\u0900-\u097F])"),
+    ("number", r"(?<![\w\u0900-\u097F])[0-9\u0966-\u096F]+(?:\.[0-9\u0966-\u096F]+)?(?![\w\u0900-\u097F])"),
 )
 
 # Words that show a process has a way to challenge or to tell people something.
-APPEAL_CUES = ("appeal", "appeals", "grievance", "review of the decision", "reconsider",
-               "objection", "complaint", "redress", "challenge the decision")
-NOTIFY_CUES = ("notify", "notified", "notification", "inform", "informed", "intimate",
-               "intimation", "communicate", "communicated", "e-mail the", "email the",
-               "letter to", "notice to", "confirmation notice", "publish", "published")
+APPEAL_CUES = (
+    "appeal", "appeals", "grievance", "review of the decision", "reconsider",
+    "objection", "complaint", "redress", "challenge the decision",
+    # Hindi and Marathi cues
+    "\u0905\u092a\u0940\u0932",             # appeal
+    "\u0924\u0915\u094d\u0930\u093e\u0930", # taksrar (complaint)
+    "\u0906\u0915\u094d\u0937\u0947\u092a", # aksep (objection)
+    "\u092b\u0947\u0930\u0935\u093f\u091a\u093e\u0930",  # feravichar (reconsideration)
+    "\u092a\u0941\u0928\u0930\u094d\u0935\u093f\u091a\u093e\u0930",  # punarvichar (reconsideration)
+    "\u0928\u093f\u0935\u093e\u0930\u0923",  # nivaran (redress)
+    "\u0926\u093e\u0926",                   # daad (redress/relief)
+)
+NOTIFY_CUES = (
+    "notify", "notified", "notification", "inform", "informed", "intimate",
+    "intimation", "communicate", "communicated", "e-mail the", "email the",
+    "letter to", "notice to", "confirmation notice", "publish", "published",
+    # Hindi and Marathi cues
+    "\u0915\u0933\u0935\u0923\u0947",       # kalavane (to notify)
+    "\u0915\u0933\u0935\u0932\u0947",       # kalavale (notified)
+    "\u0938\u0942\u091a\u093f\u0924",       # suchit (intimated)
+    "\u0938\u0942\u091a\u0928\u093e",       # suchana (notice/notification)
+    "\u0908\u092e\u0947\u0932",             # email
+    "\u092a\u0924\u094d\u0930",             # patra (letter)
+    "\u092a\u094d\u0930\u0938\u093f\u0926\u094d\u0927",  # prasiddha (published)
+    "\u092e\u093e\u0939\u093f\u0924\u0940", # mahiti (information)
+    "\u0938\u0902\u0926\u0947\u0936",       # sandesh (message)
+    "\u0905\u0935\u0917\u0924",             # avgat (informed)
+)
+
+
+# Use code-point arithmetic to avoid encoding issues in the source file.
+_DEVANAGARI_DIGITS = str.maketrans({chr(0x0966 + i): str(i) for i in range(10)})
+
+
+def _to_ascii_digits(text: str) -> str:
+    """Normalize Devanagari numerals to standard ASCII digits."""
+    return text.translate(_DEVANAGARI_DIGITS)
 
 
 def route_question_to_role(kind: str) -> str:
@@ -85,11 +192,18 @@ def _letter(index: int) -> str:
 
 
 def _norm(text: Optional[str]) -> str:
-    """Normalise free text for fingerprinting: lowercase, no punctuation, single spaces."""
+    """Normalise free text for fingerprinting: lowercase, no punctuation, single spaces.
+
+    Preserves Unicode letters, combining marks/matras, and digits across scripts.
+    """
     if not text:
         return ""
-    cleaned = re.sub(r"[^a-z0-9 ]+", " ", str(text).lower())
-    return re.sub(r"\s+", " ", cleaned).strip()
+    # Keep Unicode letters (L), marks/matras (M), numbers (N); convert punctuation/symbols to space
+    chars = [
+        c if (unicodedata.category(c)[0] in ("L", "M", "N") or c.isspace()) else " "
+        for c in str(text).lower()
+    ]
+    return re.sub(r"\s+", " ", "".join(chars)).strip()
 
 
 def _source_key(src: Optional[Dict[str, Any]]) -> str:
@@ -160,9 +274,15 @@ def extract_values(text: str, subject: Optional[str]) -> List[str]:
 def _subject_for_value(value: str) -> str:
     """A neutral noun for a value whose rule gave no subject word."""
     lowered = value.lower()
-    if re.search(r"(january|february|march|april|may|june|july|august|september|october|november|december|/)", lowered):
+    if re.search(
+        rf"(?:{_MONTHS_ALL}|/|-)",
+        lowered,
+    ):
         return "date"
-    if re.search(r"(rs\.?|inr|usd|\$|₹|rupees|dollars)", lowered):
+    if re.search(
+        r"(rs\.?|inr|usd|\$|\u20b9|rupees|dollars|\u0930\u0941\u092a\u092f\u0947|\u0930\u0941\u092a\u092f\u093e|\u0930\u0941\.?|\u0930\u0941)",
+        lowered,
+    ):
         return "amount"
     return "value"
 
@@ -184,9 +304,14 @@ def _values_conflict(a: str, b: str) -> bool:
     na, nb = _norm(a), _norm(b)
     if na == nb:
         return False
-    # "500" and "500 rupees" are the same amount stated differently.
-    digits_a = re.sub(r"[^0-9.]", "", na)
-    digits_b = re.sub(r"[^0-9.]", "", nb)
+    # Normalize Devanagari digits to ASCII digits
+    na_digits = _to_ascii_digits(na)
+    nb_digits = _to_ascii_digits(nb)
+    if na_digits == nb_digits:
+        return False
+    # "500", "500 rupees", and "\u096b\u0966\u0966 \u0930\u0941\u092a\u092f\u0947" are the same amount stated differently.
+    digits_a = re.sub(r"[^0-9.]", "", na_digits)
+    digits_b = re.sub(r"[^0-9.]", "", nb_digits)
     if digits_a and digits_a == digits_b:
         return False
     return True
@@ -405,7 +530,7 @@ class GapAnalysisAgent:
         for ev in evidence_items:
             quote_lower = (ev.get("quote") or "").lower()
             for term in VAGUE_TERMS:
-                if not re.search(rf"\b{re.escape(term)}\b", quote_lower):
+                if not re.search(rf"(?<![\w\u0900-\u097F]){re.escape(term)}(?![\w\u0900-\u097F])", quote_lower):
                     continue
                 src = ev_sources.get(str(ev["id"]), {})
                 where = ""

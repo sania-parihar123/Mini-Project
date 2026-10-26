@@ -24,7 +24,7 @@ class DocumentParser:
         """
         lower_name = filename.lower()
         if lower_name.endswith(".txt") or lower_name.endswith(".md"):
-            sections, warnings = self._parse_text(content.decode("utf-8", errors="replace"))
+            sections, warnings = self._parse_text(content.decode("utf-8-sig", errors="replace"))
         elif lower_name.endswith(".docx"):
             sections, warnings = self._parse_docx(content)
         elif lower_name.endswith(".pdf"):
@@ -47,13 +47,17 @@ class DocumentParser:
         if re.match(r"^#{1,6}\s+\S+", stripped):
             return True
 
-        # Numbered headings e.g. "1. OVERVIEW", "Section 2: Rules", "2.1 Deadlines"
-        if re.match(r"^(\d+(\.\d+)*\.?|section\s+\d+:?)\s+[A-Za-z]", stripped, re.IGNORECASE):
+        # Numbered headings e.g. "1. OVERVIEW", "Section 2: Rules", "2.1 Deadlines", "१. प्रवेश प्रक्रिया", "विभाग २: नियम"
+        if re.match(
+            r"^(\d+(\.\d+)*\.?|(?:section|भाग|विभाग|अध्याय|अनुभाग|परिशिष्ट|कलम)\s+\d+[:.]?)\s+[^\W\d_]",
+            stripped,
+            re.IGNORECASE | re.UNICODE,
+        ):
             return True
 
-        # ALL-CAPS short titles (at least 4 letters, no period at end, mostly upper)
+        # ALL-CAPS short titles (at least 4 letters, no period/danda at end, mostly upper)
         clean_letters = re.sub(r"[^A-Za-z]", "", stripped)
-        if len(clean_letters) >= 4 and clean_letters.isupper() and not stripped.endswith("."):
+        if len(clean_letters) >= 4 and clean_letters.isupper() and not stripped.endswith((".", "।", "॥")):
             return True
 
         return False

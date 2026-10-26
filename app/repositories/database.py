@@ -1644,25 +1644,26 @@ class DatabaseRepository:
             "created_at": created_at
         }
 
-    def list_project_evidence(self, project_id: str) -> List[Dict[str, Any]]:
+    def list_project_evidence(self, project_id: str, include_superseded: bool = False) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
             cur = conn.cursor()
+            status_clause = "" if include_superseded else " AND e.status = 'extracted'"
             if self.use_postgres:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT e.*, s.section_title, s.section_index, s.page_number, d.filename as document_filename
                     FROM evidence_items e
                     JOIN document_sections s ON s.id = e.document_section_id
                     JOIN documents d ON d.id = s.document_id
-                    WHERE e.project_id = %s
+                    WHERE e.project_id = %s{status_clause}
                     ORDER BY e.evidence_key ASC;
                 """, (project_id,))
             else:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT e.*, s.section_title, s.section_index, s.page_number, d.filename as document_filename
                     FROM evidence_items e
                     JOIN document_sections s ON s.id = e.document_section_id
                     JOIN documents d ON d.id = s.document_id
-                    WHERE e.project_id = ?
+                    WHERE e.project_id = ?{status_clause}
                     ORDER BY e.evidence_key ASC;
                 """, (project_id,))
             rows = cur.fetchall()
@@ -2819,7 +2820,7 @@ class DatabaseRepository:
                 SELECT DISTINCT e.document_section_id
                 FROM evidence_items e
                 JOIN document_sections s ON s.id = e.document_section_id
-                WHERE e.project_id = {ph} AND s.extracted_by = {ph}
+                WHERE e.project_id = {ph} AND s.extracted_by = {ph} AND e.status = 'extracted'
                 """,
                 (project_id, extractor_version),
             )
@@ -2837,11 +2838,49 @@ class DatabaseRepository:
                 JOIN rule_evidence re ON re.rule_id = br.id
                 JOIN evidence_items e ON e.id = re.evidence_id
                 JOIN document_sections s ON s.id = e.document_section_id
-                WHERE br.project_id = {ph} AND s.extracted_by = {ph}
+                WHERE br.project_id = {ph} AND s.extracted_by = {ph} AND br.status != 'superseded' AND e.status = 'extracted'
                 """,
                 (project_id, extractor_version),
             )
             return {str(r[0]) for r in cur.fetchall()}
+
+    def supersede_section_evidence(self, section_id: str) -> int:
+        """Mark existing extracted evidence for a section as superseded without deleting."""
+        ph = "%s" if self.use_postgres else "?"
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                f"UPDATE evidence_items SET status = 'superseded' WHERE document_section_id = {ph} AND status = 'extracted'",
+                (section_id,),
+            )
+            count = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+            if not self.use_postgres:
+                conn.commit()
+            return count
+
+    def supersede_section_rules(self, section_id: str) -> int:
+        """Mark unapproved candidate rules linked to a section as superseded upon re-mining."""
+        ph = "%s" if self.use_postgres else "?"
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                f"""
+                UPDATE business_rules
+                SET status = 'superseded'
+                WHERE status = 'needs_review' AND id IN (
+                    SELECT DISTINCT br.id
+                    FROM business_rules br
+                    JOIN rule_evidence re ON re.rule_id = br.id
+                    JOIN evidence_items e ON e.id = re.evidence_id
+                    WHERE e.document_section_id = {ph}
+                )
+                """,
+                (section_id,),
+            )
+            count = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+            if not self.use_postgres:
+                conn.commit()
+            return count
 
     def mark_section_extracted(self, section_id: str, extractor_version: str) -> None:
         """Stamp a section with the extractor version that last mined it."""

@@ -118,9 +118,11 @@ class LLMService:
 
             from google.genai import types
             prompt = (
-                "You are an expert OCR engine. Extract all readable text, headings, numbered lists, "
-                "tables, dates, fees, and instructions from this document page image. "
-                "Output ONLY the transcribed text verbatim, preserving headings and paragraphs."
+                "You are an expert multilingual OCR engine. Extract all readable text, headings, numbered lists, "
+                "tables, dates, fees, and instructions from this document page image in its original script and language "
+                "(e.g., Hindi, Marathi, English, or any other language present). "
+                "Transcribe the text accurately and verbatim without translating, preserving original Unicode characters, "
+                "scripts, punctuation, headings, and paragraphs. Output ONLY the transcribed text verbatim."
             )
             with self._call_slots:
                 self._pace()
@@ -234,10 +236,11 @@ class LLMService:
             sources = re.findall(r"<source>(.*?)</source>", prompt, re.DOTALL)
             sample_text = sources[0] if sources else prompt
 
-            # Search for actual sentences to quote verbatim
-            sentences = [s.strip() for s in re.split(r"[.\n]+", sample_text) if len(s.strip()) > 15]
+            # Search for actual sentences to quote verbatim (support '.' and Devanagari '।' / '॥')
+            sentences = [s.strip() for s in re.split(r"[.\u0964\u0965\n]+", sample_text) if len(s.strip()) > 15]
             for s in sentences[:4]:
-                ctype = "rule" if any(w in s.lower() for w in ["must", "shall", "required", "deadline", "fee"]) else "step"
+                s_lower = s.lower()
+                ctype = "rule" if any(w in s_lower for w in ["must", "shall", "required", "deadline", "fee", "पात्र", "शुल्क", "मुदत", "आवश्यक", "नियम"]) else "step"
                 claims.append({
                     "claim": s,
                     "quote": s,
@@ -259,11 +262,11 @@ class LLMService:
             rules = []
             sources = re.findall(r"<source>(.*?)</source>", prompt, re.DOTALL)
             sample_text = sources[0] if sources else prompt
-            sentences = [s.strip() for s in re.split(r"[.\n]+", sample_text) if len(s.strip()) > 15]
+            sentences = [s.strip() for s in re.split(r"[.\u0964\u0965\n]+", sample_text) if len(s.strip()) > 15]
 
             for s in sentences:
                 s_lower = s.lower()
-                if any(w in s_lower for w in ["deadline", "submit", "before", "fee", "eligib", "approve"]):
+                if any(w in s_lower for w in ["deadline", "submit", "before", "fee", "eligib", "approve", "मुदत", "शुल्क", "पात्र", "अर्ज", "मान्यता", "सादर"]):
                     rules.append({
                         "description": s,
                         "condition": "When an applicant initiates or submits an application",
@@ -284,15 +287,23 @@ class LLMService:
         # As-Is Process Discovery
         if "asis" in schema_name.lower():
             steps = []
+            sources = re.findall(r"<source>(.*?)", prompt, re.DOTALL)
+            # Find all source tags
             sources = re.findall(r"<source>(.*?)</source>", prompt, re.DOTALL)
             sample_text = sources[0] if sources else prompt
-            sentences = [s.strip() for s in re.split(r"[.\n]+", sample_text) if len(s.strip()) > 12]
+            sentences = [s.strip() for s in re.split(r"[.\u0964\u0965\n]+", sample_text) if len(s.strip()) > 12]
 
             idx = 1
             for s in sentences[:6]:
                 # Plant unknown actor if passive voice or no explicit actor keyword
-                has_named_actor = any(a in s.lower() for a in ["clerk", "officer", "student", "committee", "dean", "warden", "registrar", "applicant"])
-                actor = "Student" if "student" in s.lower() or "applicant" in s.lower() else ("Clerk" if "clerk" in s.lower() else None)
+                s_lower = s.lower()
+                has_named_actor = any(a in s_lower for a in [
+                    "clerk", "officer", "student", "committee", "dean", "warden", "registrar", "applicant",
+                    "विद्यार्थी", "अर्जदार", "लिपिक", "अधिकारी", "प्राचार्य", "डीन", "समिती"
+                ])
+                actor = "Student" if any(w in s_lower for w in ["student", "applicant", "विद्यार्थी", "अर्जदार"]) else (
+                    "Clerk" if any(w in s_lower for w in ["clerk", "लिपिक"]) else ("Officer" if has_named_actor else None)
+                )
                 if not has_named_actor:
                     actor = None
 
@@ -300,7 +311,7 @@ class LLMService:
                 steps.append({
                     "name": s[:60],
                     "actor": actor,
-                    "step_type": "review" if "verify" in s.lower() or "check" in s.lower() else "task",
+                    "step_type": "review" if any(w in s_lower for w in ["verify", "check", "तपासणी", "पडताळणी"]) else "task",
                     "sequence": idx,
                     "inputs": ["Application Form"],
                     "outputs": ["Status Update"],
@@ -361,19 +372,19 @@ class LLMService:
         if "understanding" in schema_name.lower():
             sources = re.findall(r"<source>(.*?)</source>", prompt, re.DOTALL)
             sample_text = sources[0] if sources else prompt
-            sentences = [s.strip() for s in re.split(r"[.\n]+", sample_text) if len(s.strip()) > 15]
+            sentences = [s.strip() for s in re.split(r"[.\u0964\u0965\n]+", sample_text) if len(s.strip()) > 15]
             q0 = sentences[0] if sentences else "Official Institutional Process Guidelines"
 
-            fee_sentences = [s for s in sentences if any(w in s.lower() for w in ["fee", "$", "waiver", "charge", "payment"])]
+            fee_sentences = [s for s in sentences if any(w in s.lower() for w in ["fee", "$", "waiver", "charge", "payment", "शुल्क", "रुपये", "रक्कम", "फी"])]
             fees = [{"statement": fs, "exact_quote": fs, "page_number": 1, "is_extracted_fact": True} for fs in fee_sentences]
 
-            date_sentences = [s for s in sentences if any(w in s.lower() for w in ["deadline", "date", "day", "month", "before", "within", "annual"])]
+            date_sentences = [s for s in sentences if any(w in s.lower() for w in ["deadline", "date", "day", "month", "before", "within", "annual", "मुदत", "दिनांक", "तारीख", "दिवस"])]
             dates = [{"statement": ds, "exact_quote": ds, "page_number": 1, "is_extracted_fact": True} for ds in date_sentences]
 
-            role_sentences = [s for s in sentences if any(w in s.lower() for w in ["applicant", "student", "officer", "clerk", "dean", "owner", "approver", "committee", "director"])]
+            role_sentences = [s for s in sentences if any(w in s.lower() for w in ["applicant", "student", "officer", "clerk", "dean", "owner", "approver", "committee", "director", "विद्यार्थी", "अर्जदार", "अधिकारी", "लिपिक"])]
             roles = [{"statement": rs, "exact_quote": rs, "page_number": 1, "is_extracted_fact": True} for rs in role_sentences]
 
-            doc_sentences = [s for s in sentences if any(w in s.lower() for w in ["document", "certificate", "id", "identification", "proof", "form", "transcript", "statement"])]
+            doc_sentences = [s for s in sentences if any(w in s.lower() for w in ["document", "certificate", "id", "identification", "proof", "form", "transcript", "statement", "कागदपत्र", "प्रमाणपत्र", "दाखला", "अर्ज"])]
             req_docs = [{"statement": rds, "exact_quote": rds, "page_number": 1, "is_extracted_fact": True} for rds in doc_sentences]
 
             steps = [{"statement": st, "exact_quote": st, "page_number": 1, "is_extracted_fact": True} for st in sentences[:3]]
