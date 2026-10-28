@@ -3,6 +3,7 @@ import logging
 from typing import List, Dict, Any, Optional
 
 from app.repositories.database import db
+from app.services import process_artifacts
 from app.services.artifact_export import (
     generate_brd_markdown,
     generate_prd_markdown,
@@ -138,6 +139,11 @@ class RequirementsAgent:
 | Approve BRD / PRD / FRD | Yes | No | No |
 | Approve Architecture & Tests | No | No | Yes |
 """
+        # Process-specific roles from the approved steps; the fixed platform table
+        # is kept as an appendix, and is used alone if there are no steps yet.
+        platform_table = roles_md.split("|---|---|---|---|\n", 1)[-1]
+        platform_table = "| Action | Process Owner | Analyst | Technical Reviewer |\n|---|---|---|---|\n" + platform_table
+        roles_md = process_artifacts.roles_matrix_md(project, steps, rules, platform_table) or roles_md
         roles_art = db.save_artifact(project_id, "roles_matrix", roles_md, content_json={}, status="draft")
         generated_artifacts.append(roles_art)
 

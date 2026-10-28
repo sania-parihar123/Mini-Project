@@ -259,6 +259,10 @@ def list_document_sections(document_id: str, user: dict = Depends(get_current_us
     require_project_member(doc["project_id"], user)
     return db.list_document_sections(document_id)
 
+# Bump this to invalidate every saved summary (v2: whitespace-tolerant quote matching).
+UNDERSTANDING_CACHE_VERSION = "v2"
+
+
 @router.get("/documents/{document_id}/understanding", response_model=DocumentUnderstandingResponse)
 def get_document_understanding(document_id: str, user: dict = Depends(get_current_user)):
     """"What I understood" for one document, with every quote verified in code.
@@ -287,7 +291,7 @@ def get_document_understanding(document_id: str, user: dict = Depends(get_curren
     partially_read = any("could not be read" in str(w).lower()
                          or "ocr failed" in str(w).lower() for w in warnings)
 
-    cached = db.get_document_understanding(document_id, doc["checksum"])
+    cached = db.get_document_understanding(document_id, UNDERSTANDING_CACHE_VERSION and f'{doc["checksum"]}|{UNDERSTANDING_CACHE_VERSION}')
     if cached:
         cached["document_id"] = doc["id"]
         cached["filename"] = doc["filename"]
@@ -295,11 +299,32 @@ def get_document_understanding(document_id: str, user: dict = Depends(get_curren
         cached["partially_read"] = partially_read
         return DocumentUnderstandingResponse.model_validate(cached)
 
-    from app.services.llm_service import llm_service
-    combined_text = "\n\n".join([
-        f"[Page {s.get('page_number', 1)}] {s.get('section_title', '')}\n{s.get('text', '')}"
-        for s in sections
-    ])
+    import os
+    from app.services.llm_service import llm_service, LLMQuotaExceeded, LLMServiceError
+
+    # Small hosted models (e.g. Groq's free tier) reject one huge request. Cap the
+    # text sent for this summary panel and say so, instead of failing with a 500.
+    default_cap = "12000" if llm_service.provider == "groq" else "0"
+    try:
+        max_chars = int(os.getenv("LLM_UNDERSTANDING_MAX_CHARS", default_cap))
+    except ValueError:
+        max_chars = 0
+
+    parts, used, sent_sections = [], 0, 0
+    for s in sections:
+        block = f"[Page {s.get('page_number', 1)}] {s.get('section_title', '')}\n{s.get('text', '')}"
+        if max_chars and used + len(block) > max_chars and sent_sections:
+            break
+        parts.append(block)
+        used += len(block)
+        sent_sections += 1
+    combined_text = "\n\n".join(parts)
+    truncated_note = None
+    if sent_sections < len(sections):
+        truncated_note = (
+            f"Only the first {sent_sections} of {len(sections)} sections were summarised here because "
+            "of the AI provider's request-size limit. The full document is still used by the main analysis."
+        )
 
     prompt = (
         f"Analyze this institutional document:\n"
@@ -321,7 +346,13 @@ def get_document_understanding(document_id: str, user: dict = Depends(get_curren
         "- Never invent quotes or present unsupported details as facts."
     )
 
-    result = llm_service.complete_json(prompt, DocumentUnderstandingResponse)
+    try:
+        result = llm_service.complete_json(prompt, DocumentUnderstandingResponse)
+    except LLMQuotaExceeded as e:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(e)[:400])
+    except LLMServiceError as e:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY,
+                            detail=f"The AI provider could not summarise this document: {str(e)[:400]}")
     result.document_id = doc["id"]
     result.filename = doc["filename"]
     result.read_from_image = read_from_img
@@ -330,13 +361,15 @@ def get_document_understanding(document_id: str, user: dict = Depends(get_curren
 
     dropped = _verify_understanding_quotes(result, sections)
     result.unverified_quotes_dropped = dropped
+    if truncated_note:
+        result.missing_or_uncertain_information.append(truncated_note)
     if dropped:
         result.missing_or_uncertain_information.append(
             f"{dropped} quotation(s) offered by the model could not be found in the "
             "source text and were discarded."
         )
 
-    db.save_document_understanding(document_id, doc["checksum"], result.model_dump())
+    db.save_document_understanding(document_id, f'{doc["checksum"]}|{UNDERSTANDING_CACHE_VERSION}', result.model_dump())
     return result
 
 
@@ -354,17 +387,26 @@ def _verify_understanding_quotes(result: DocumentUnderstandingResponse, sections
     """
     section_texts = [s.get("text") or "" for s in sections]
 
+    from app.services.quote_match import find_verbatim
+
+    def real_quote(quote: Optional[str]) -> Optional[str]:
+        """The exact source text the quote refers to (whitespace-tolerant), or None."""
+        for text in section_texts:
+            hit = find_verbatim(quote, text)
+            if hit:
+                return hit
+        return None
+
     def verified(quote: Optional[str]) -> bool:
-        if not quote or not quote.strip():
-            return False
-        needle = quote.strip()
-        return any(needle in text for text in section_texts)
+        return real_quote(quote) is not None
 
     dropped = 0
     for field in _UNDERSTANDING_LIST_FIELDS:
         kept = []
         for fact in getattr(result, field):
-            if verified(fact.exact_quote):
+            hit = real_quote(fact.exact_quote)
+            if hit:
+                fact.exact_quote = hit
                 fact.quote_verified = True
                 kept.append(fact)
             elif not fact.is_extracted_fact:
@@ -381,7 +423,9 @@ def _verify_understanding_quotes(result: DocumentUnderstandingResponse, sections
     # the view still says what kind of document this is.
     for single in ("document_type", "summary"):
         fact = getattr(result, single)
-        if verified(fact.exact_quote):
+        hit = real_quote(fact.exact_quote)
+        if hit:
+            fact.exact_quote = hit
             fact.quote_verified = True
         else:
             if fact.exact_quote:

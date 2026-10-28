@@ -7,6 +7,7 @@ import html
 import json
 import time
 import streamlit as st
+import streamlit.components.v1 as components
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 
@@ -22,6 +23,7 @@ from app.ui.components import (
     render_html
 )
 from app.ui.api_client import api_client
+from app.services import workflow_preview
 
 # -------------------------------------------------------------------------
 # Cached API Client Wrappers (P0 Latency Optimization)
@@ -1225,6 +1227,44 @@ elif st.session_state["active_page"] == "Workflow & Traceability":
             </div>
             """)
         render_html('</div>')
+
+    # ---------------------------------------------------------------------
+    # Workflow preview and clickable prototype (design doc A11 / Page 7)
+    # Built from the project's own workflow JSON; nothing is saved or sent.
+    # ---------------------------------------------------------------------
+    st.markdown("### Workflow Preview & Prototype (A11)")
+    render_html("<p style='color:var(--muted);font-size:13.5px;'>Generated from the project's workflow JSON. The prototype is illustrative only: it stores nothing and is not a working system.</p>")
+    try:
+        wf_art = {a["artifact_type"]: a for a in fetch_artifacts(token, pid)}.get("workflow_json")
+    except Exception:
+        wf_art = None
+    wf_data = (wf_art or {}).get("content_json")
+    preview = workflow_preview.preview_html(wf_data)
+    if not preview:
+        st.info("No workflow yet. Run the analysis and approve the To-Be process to generate the workflow preview and prototype.")
+    else:
+        try:
+            wf_rules = api_client.get_rules(token, pid)
+        except Exception:
+            wf_rules = []
+        proto_html = workflow_preview.prototype_html(wf_data, wf_rules)
+        tab_prev, tab_proto, tab_json = st.tabs(["Workflow diagram", "Clickable prototype", "Workflow JSON"])
+        with tab_prev:
+            components.html(preview[0], height=min(preview[1] + 40, 760), scrolling=True)
+            st.download_button(
+                "Download diagram (.html)", data=preview[0],
+                file_name=f"workflow_preview_v{wf_art['version']}.html", mime="text/html",
+                key="dl_wf_preview",
+            )
+        with tab_proto:
+            components.html(proto_html, height=720, scrolling=True)
+            st.download_button(
+                "Download prototype (.html)", data=proto_html,
+                file_name=f"prototype_v{wf_art['version']}.html", mime="text/html",
+                key="dl_wf_prototype",
+            )
+        with tab_json:
+            st.json(wf_data)
 
 # -------------------------------------------------------------------------
 # Page 11: Team & Invitations

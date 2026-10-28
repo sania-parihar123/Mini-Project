@@ -3,6 +3,7 @@ import logging
 from typing import Dict, Any, List
 
 from app.repositories.database import db
+from app.services import process_artifacts
 
 logger = logging.getLogger("processfoundry.agent.quality")
 
@@ -132,6 +133,14 @@ All document uploads stored in server-generated paths. Untrusted text wrapped in
 - `test_cases`: Test scenarios linked directly to requirements.
 - `audit_events`: Append-only table protected by SHA-256 hash chains.
 """
+        # Process-specific HLD and data model from the approved steps. The older
+        # fixed text is kept as an appendix (or used alone with no steps).
+        pv = db.get_latest_process_version(project_id)
+        pa_steps = pv.get("steps", []) if pv else []
+        pa_rules = db.list_project_business_rules(project_id)
+        hld_md = process_artifacts.hld_md(project, pa_steps, pa_rules, process_artifacts.as_appendix(hld_md)) or hld_md
+        erd_md = process_artifacts.data_model_md(project, pa_steps, pa_rules, process_artifacts.as_appendix(erd_md)) or erd_md
+
         return {
             "documents": {
                 "traceability_matrix": matrix_md,

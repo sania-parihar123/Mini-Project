@@ -3,7 +3,8 @@ import logging
 from typing import List, Dict, Any
 
 from app.schemas.rules import SectionRulesExtraction
-from app.services.llm_service import llm_service
+from app.services.llm_service import llm_service, LLMQuotaExceeded
+from app.services.quote_match import norm_ws
 from app.repositories.database import db
 from app.agents.evidence import EXTRACTOR_VERSION
 
@@ -36,19 +37,23 @@ class BusinessRuleAgent:
                 schema=SectionRulesExtraction,
                 system_instruction="Extract explicit business rules in English. Ground each rule in an exact verbatim quote from the original source without translation."
             )
+        except LLMQuotaExceeded:
+            raise
         except Exception as e:
             logger.warning(f"Rule extraction model call failed for section {section.get('id')}: {e}")
             return []
 
+        db.supersede_section_rules(section["id"])  # only after a successful call
+
         # Find evidence IDs corresponding to the quotes or this section
         sec_evidence = [e for e in evidence_items if e.get("document_section_id") == section["id"]]
-        ev_quote_map = {e["quote"].strip().lower(): e["id"] for e in sec_evidence}
+        ev_quote_map = {norm_ws(e["quote"]).lower(): e["id"] for e in sec_evidence}
 
         saved_rules = []
         unlinked = []
         for r in extraction.rules:
             matched_eids = []
-            q_clean = r.evidence_quote.strip().lower()
+            q_clean = norm_ws(r.evidence_quote).lower()
             if q_clean in ev_quote_map:
                 matched_eids.append(ev_quote_map[q_clean])
             else:
@@ -139,7 +144,6 @@ class BusinessRuleAgent:
         for sec in document_sections:
             if str(sec["id"]) in done:
                 continue
-            db.supersede_section_rules(sec["id"])
             sec_rules = self.extract_section_rules(project_id, sec, evidence_items)
             all_rules.extend(sec_rules)
         return all_rules

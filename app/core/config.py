@@ -32,6 +32,10 @@ try:
         llm_api_key: str = ""
         llm_model: str = "gemini-2.5-flash"
         llm_timeout_seconds: int = 60
+        groq_vision_model: str = "meta-llama/llama-4-scout-17b-16e-instruct"
+        azure_openai_endpoint: str = ""
+        azure_openai_deployment: str = ""
+        azure_openai_api_version: str = "2024-10-21"
         llm_call_delay_seconds: float = 0.2
         llm_max_concurrent_calls: int = 2
         api_base_url: str = "http://localhost:8000"
@@ -79,6 +83,10 @@ except ImportError:
             self.llm_api_key = get("LLM_API_KEY", "")
             self.llm_model = get("LLM_MODEL", "gemini-2.5-flash")
             self.llm_timeout_seconds = int(get("LLM_TIMEOUT_SECONDS", "60"))
+            self.groq_vision_model = get("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
+            self.azure_openai_endpoint = get("AZURE_OPENAI_ENDPOINT", "")
+            self.azure_openai_deployment = get("AZURE_OPENAI_DEPLOYMENT", "")
+            self.azure_openai_api_version = get("AZURE_OPENAI_API_VERSION", "2024-10-21")
             self.llm_call_delay_seconds = float(get("LLM_CALL_DELAY_SECONDS", "0.2"))
             self.llm_max_concurrent_calls = int(get("LLM_MAX_CONCURRENT_CALLS", "2"))
             self.api_base_url = get("API_BASE_URL", "http://localhost:8000")

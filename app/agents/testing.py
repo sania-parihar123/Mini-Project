@@ -3,6 +3,7 @@ import logging
 from typing import List, Dict, Any
 
 from app.repositories.database import db
+from app.services import process_artifacts
 
 logger = logging.getLogger("processfoundry.agent.testing")
 
@@ -88,6 +89,11 @@ Total Test Scenarios Generated: {len(saved_tests)}
 | UAT-003 | Process Owner | Pending approval queue | Review applicant dossier | Final decision recorded in audit log | [ ] |
 | UAT-004 | Unauthorized User | Non-member account | Access project details | Access denied HTTP 404 | [ ] |
 """
+        # Build UAT scenarios from the approved steps and rules; keep the fixed
+        # table only when the project has no steps yet.
+        pv = db.get_latest_process_version(project_id)
+        uat_steps = pv.get("steps", []) if pv else []
+        uat_md = process_artifacts.uat_md(project, uat_steps, db.list_project_business_rules(project_id)) or uat_md
         db.save_artifact(project_id, "uat_pack", uat_md, content_json={}, status="draft")
 
         return saved_tests

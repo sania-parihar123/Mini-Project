@@ -3,7 +3,8 @@ import logging
 from typing import List, Dict, Any
 
 from app.schemas.evidence import SectionEvidenceExtraction
-from app.services.llm_service import llm_service
+from app.services.llm_service import llm_service, LLMQuotaExceeded
+from app.services.quote_match import find_verbatim
 from app.repositories.database import db
 
 logger = logging.getLogger("processfoundry.agent.evidence")
@@ -35,12 +36,20 @@ class EvidenceAgent:
                 schema=SectionEvidenceExtraction,
                 system_instruction="Extract only factual claims in English. The quote must be an exact verbatim substring from the source in its original language without translation."
             )
+        except LLMQuotaExceeded:
+            raise  # stop the whole run; do not keep calling the API
         except Exception as e:
             logger.warning(f"Evidence extraction LLM call failed for section {section.get('id')}: {e}")
             return []
 
         saved_evidence = []
-        verified_claims = [c for c in extraction.claims if c.quote.strip() and c.quote.strip() in section_text]
+        # Whitespace-tolerant check; the quote we store is the real source substring.
+        verified_claims = []
+        for c in extraction.claims:
+            real = find_verbatim(c.quote, section_text)
+            if real:
+                c.quote = real
+                verified_claims.append(c)
         if verified_claims:
             db.supersede_section_evidence(section["id"])
 

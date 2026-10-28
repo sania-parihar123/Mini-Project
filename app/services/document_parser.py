@@ -202,6 +202,11 @@ class DocumentParser:
                     else:
                         unreadable_pages.append(page_num + 1)
                 except Exception as e:
+                    from app.services.llm_service import LLMQuotaExceeded
+                    if isinstance(e, LLMQuotaExceeded):
+                        raise DocumentParserError(
+                            f"OCR stopped on page {page_num + 1}: Gemini quota exhausted. {e}"
+                        )
                     # Record it on the document: a page silently contributing no
                     # text used to leave a partly-read file looking fully parsed.
                     unreadable_pages.append(page_num + 1)

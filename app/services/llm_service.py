@@ -18,6 +18,29 @@ class LLMServiceError(Exception):
     """Raised when model gateway fails after retries."""
     pass
 
+class LLMQuotaExceeded(LLMServiceError):
+    """Raised when the provider says the quota is used up. Never retried."""
+    pass
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    t = str(exc).lower()
+    return "429" in t or "resource_exhausted" in t or "quota" in t
+
+
+def _is_daily_quota(exc: Exception) -> bool:
+    t = str(exc)
+    return "PerDay" in t or "per day" in t.lower()
+
+
+def _retry_delay_seconds(exc: Exception):
+    m = re.search(r"retryDelay'?\"?:\s*'?\"?(\d+(?:\.\d+)?)s", str(exc))
+    if m:
+        return float(m.group(1))
+    m = re.search(r"retry after (\d+(?:\.\d+)?) second", str(exc), re.IGNORECASE)
+    return float(m.group(1)) if m else None
+
+
 class LLMService:
     def __init__(self):
         self.provider = settings.llm_provider.lower()
@@ -25,6 +48,14 @@ class LLMService:
         self.model_name = settings.llm_model.strip() or "gemini-2.5-flash"
         self.timeout = settings.llm_timeout_seconds
         self._gemini_client = None
+        self.azure_endpoint = (settings.azure_openai_endpoint or "").strip().rstrip("/")
+        self.azure_deployment = (settings.azure_openai_deployment or "").strip()
+        self.azure_api_version = (settings.azure_openai_api_version or "2024-10-21").strip()
+        if self.provider == "azure" and self.azure_deployment:
+            self.model_name = self.azure_deployment  # used in logs and cache key
+        self.groq_vision_model = (getattr(settings, "groq_vision_model", "") or "").strip()
+        self.calls_made = 0  # real HTTP calls to Gemini in this process
+        self._cache_dir = os.path.join(os.getcwd(), ".llm_cache")
 
         # Free-tier rate limits: pace the per-section calls and never run more
         # than a couple at once (brief Phase 0 step 3).
@@ -62,11 +93,29 @@ class LLMService:
                 "To use the mock deliberately for offline development or tests, "
                 "set ALLOW_SQLITE=true or APP_ENV=test in your environment."
             )
-        if self.provider not in ("gemini", "mock"):
+        if self.provider not in ("gemini", "azure", "groq", "mock"):
             raise RuntimeError(
                 f"ProcessFoundry AI Configuration Error: unknown LLM_PROVIDER "
-                f"'{self.provider}'. Allowed values: 'gemini', 'mock'."
+                f"'{self.provider}'. Allowed values: 'gemini', 'azure', 'groq', 'mock'."
             )
+        if self.provider == "groq":
+            missing = [n for n, v in (("LLM_API_KEY", self.api_key), ("LLM_MODEL", self.model_name)) if not v]
+            if missing:
+                raise RuntimeError(
+                    "ProcessFoundry AI Configuration Error: LLM_PROVIDER is 'groq' "
+                    "but these are empty in .env: " + ", ".join(missing)
+                )
+        if self.provider == "azure":
+            missing = [n for n, v in (
+                ("LLM_API_KEY", self.api_key),
+                ("AZURE_OPENAI_ENDPOINT", self.azure_endpoint),
+                ("AZURE_OPENAI_DEPLOYMENT", self.azure_deployment),
+            ) if not v]
+            if missing:
+                raise RuntimeError(
+                    "ProcessFoundry AI Configuration Error: LLM_PROVIDER is 'azure' "
+                    "but these are empty in .env: " + ", ".join(missing)
+                )
         if self.provider == "gemini" and not self.api_key:
             raise RuntimeError(
                 "ProcessFoundry AI Configuration Error: LLM_PROVIDER is 'gemini' "
@@ -87,6 +136,53 @@ class LLMService:
                 time.sleep(wait)
             self._last_call_at = time.monotonic()
 
+    def _chat(self, messages: list, json_mode: bool = False, model: str = "") -> str:
+        """Send one chat request to the configured OpenAI-compatible provider."""
+        if self.provider == "groq":
+            return self._groq_chat(messages, json_mode, model or self.model_name)
+        return self._azure_chat(messages, json_mode)
+
+    def _groq_chat(self, messages: list, json_mode: bool, model: str) -> str:
+        """One call to Groq's OpenAI-compatible chat-completions API (uses httpx)."""
+        import httpx
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        body: dict = {"model": model, "messages": messages, "temperature": 0.2}
+        if json_mode:
+            body["response_format"] = {"type": "json_object"}
+        r = httpx.post("https://api.groq.com/openai/v1/chat/completions",
+                       headers=headers, json=body, timeout=self.timeout)
+        if r.status_code >= 400:
+            extra = ""
+            if r.status_code == 429:
+                extra = f" retry after {r.headers.get('retry-after') or 10} seconds"
+            raise RuntimeError(f"Groq HTTP {r.status_code}: {r.text[:500]}{extra}")
+        return (r.json()["choices"][0]["message"].get("content")) or ""
+
+    def _azure_chat(self, messages: list, json_mode: bool = False) -> str:
+        """One call to the Azure OpenAI chat-completions REST API (uses httpx)."""
+        import httpx
+        url = (
+            f"{self.azure_endpoint}/openai/deployments/{self.azure_deployment}"
+            f"/chat/completions?api-version={self.azure_api_version}"
+        )
+        headers = {"api-key": self.api_key, "Content-Type": "application/json"}
+        body: dict = {"messages": messages, "temperature": 0.2}
+        if json_mode:
+            body["response_format"] = {"type": "json_object"}
+        for _ in range(2):
+            r = httpx.post(url, headers=headers, json=body, timeout=self.timeout)
+            if r.status_code == 400 and "temperature" in r.text and "temperature" in body:
+                body.pop("temperature")  # some models only accept the default
+                continue
+            break
+        if r.status_code >= 400:
+            extra = ""
+            if r.status_code == 429:
+                extra = f" retry after {r.headers.get('retry-after') or 10} seconds"
+            raise RuntimeError(f"Azure OpenAI HTTP {r.status_code}: {r.text[:500]}{extra}")
+        data = r.json()
+        return (data["choices"][0]["message"].get("content")) or ""
+
     def wrap_source(self, text: str) -> str:
         """Wrap untrusted document text in source delimiters to prevent prompt injection."""
         return f"<source>\n{text}\n</source>"
@@ -102,6 +198,32 @@ class LLMService:
                 "This placeholder text was generated offline because LLM_PROVIDER=mock.\n"
                 "Configure LLM_PROVIDER=gemini with a valid LLM_API_KEY to read scanned pages."
             )
+
+        if self.provider in ("azure", "groq"):
+            import base64
+            b64 = base64.b64encode(image_bytes).decode("ascii")
+            messages = [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": (
+                        "You are an expert multilingual OCR engine. Transcribe all readable text from this "
+                        "document page verbatim in its original script and language (Hindi, Marathi, English, "
+                        "etc.), preserving headings, lists, tables, dates and punctuation. Do not translate. "
+                        "Output ONLY the transcribed text."
+                    )},
+                    {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64}"}},
+                ],
+            }]
+            with self._call_slots:
+                self._pace()
+                try:
+                    self.calls_made += 1
+                    return self._chat(messages, model=self.groq_vision_model)
+                except Exception as e:
+                    logger.error(f"{self.provider} image text extraction failed: {e}")
+                    if _is_quota_error(e):
+                        raise LLMQuotaExceeded(f"{self.provider} quota/rate limit hit during OCR: {e}")
+                    raise LLMServiceError(f"{self.provider} image OCR extraction failed: {e}")
 
         if self.provider == "gemini":
             if not self.api_key:
@@ -127,6 +249,7 @@ class LLMService:
             with self._call_slots:
                 self._pace()
                 try:
+                    self.calls_made += 1
                     response = self._gemini_client.models.generate_content(
                         model=self.model_name,
                         contents=[
@@ -140,6 +263,8 @@ class LLMService:
                     return response.text or ""
                 except Exception as e:
                     logger.error(f"Gemini image text extraction failed: {e}")
+                    if _is_quota_error(e):
+                        raise LLMQuotaExceeded(f"Gemini quota exhausted during OCR: {e}")
                     raise LLMServiceError(f"Gemini image OCR extraction failed: {e}")
 
         raise LLMServiceError(f"Unsupported LLM provider: {self.provider}")
@@ -154,8 +279,8 @@ class LLMService:
         if self.provider == "mock":
             return self._mock_complete_json(prompt, schema)
 
-        if self.provider != "gemini":
-            raise LLMServiceError(f"Unsupported LLM provider: '{self.provider}'. Allowed providers: 'gemini', 'mock'.")
+        if self.provider not in ("gemini", "azure", "groq"):
+            raise LLMServiceError(f"Unsupported LLM provider: '{self.provider}'. Allowed providers: 'gemini', 'azure', 'groq', 'mock'.")
 
         if not self.api_key:
             raise LLMServiceError(
@@ -163,12 +288,33 @@ class LLMService:
                 "Configure LLM_API_KEY in your environment, or set LLM_PROVIDER=mock for offline development/testing."
             )
 
-        if self._gemini_client is None:
+        if self.provider == "azure" and not (self.azure_endpoint and self.azure_deployment):
+            raise LLMServiceError(
+                "LLM_PROVIDER is 'azure' but AZURE_OPENAI_ENDPOINT or AZURE_OPENAI_DEPLOYMENT is empty in .env."
+            )
+
+        if self.provider == "gemini" and self._gemini_client is None:
             try:
                 from google import genai
                 self._gemini_client = genai.Client(api_key=self.api_key)
             except Exception as e:
                 raise LLMServiceError(f"Failed to initialize Google GenAI Client for Gemini: {e}")
+
+        # Disk cache: an identical request is never sent twice, so re-runs and
+        # restarts cost no quota.
+        import hashlib
+        cache_key = hashlib.sha256(
+            f"{self.model_name}|{schema.__name__}|{system_instruction}|{prompt}".encode("utf-8")
+        ).hexdigest()
+        cache_path = os.path.join(self._cache_dir, cache_key + ".json")
+        try:
+            if os.path.exists(cache_path):
+                with open(cache_path, "r", encoding="utf-8") as fh:
+                    cached = schema.model_validate_json(fh.read())
+                logger.info("LLM cache hit (%s); no API call made.", schema.__name__)
+                return cached
+        except Exception:
+            pass
 
         max_retries = 2
         last_error = None
@@ -186,9 +332,40 @@ class LLMService:
                 # and _pace() keeps a short gap between calls, so the free tier's
                 # rate limit is respected (brief Phase 0 step 3). LLM_TIMEOUT_SECONDS
                 # is now actually applied; it used to be read and ignored.
+                if self.provider in ("azure", "groq"):
+                    import json as _json
+                    azure_system = (
+                        full_system
+                        + "\nReturn ONLY one JSON object (no markdown) that conforms to this JSON Schema:\n"
+                        + _json.dumps(schema.model_json_schema())
+                    )
+                    with self._call_slots:
+                        self._pace()
+                        self.calls_made += 1
+                        logger.info("%s call #%d (%s, attempt %d)", self.provider, self.calls_made, schema.__name__, attempt + 1)
+                        raw_text = self._chat(
+                            [{"role": "system", "content": azure_system},
+                             {"role": "user", "content": prompt}],
+                            json_mode=True,
+                        )
+                    raw_text = raw_text.strip()
+                    if raw_text.startswith("```"):
+                        raw_text = raw_text.strip("`")
+                        raw_text = raw_text[4:] if raw_text.lower().startswith("json") else raw_text
+                    result = schema.model_validate_json(raw_text)
+                    try:
+                        os.makedirs(self._cache_dir, exist_ok=True)
+                        with open(cache_path, "w", encoding="utf-8") as fh:
+                            fh.write(raw_text)
+                    except Exception:
+                        pass
+                    return result
+
                 from google.genai import types
                 with self._call_slots:
                     self._pace()
+                    self.calls_made += 1
+                    logger.info("Gemini call #%d (%s, attempt %d)", self.calls_made, schema.__name__, attempt + 1)
                     response = self._gemini_client.models.generate_content(
                         model=self.model_name,
                         contents=prompt,
@@ -202,7 +379,14 @@ class LLMService:
                     )
                 raw_text = response.text or ""
                 # Validate response against Pydantic schema
-                return schema.model_validate_json(raw_text)
+                result = schema.model_validate_json(raw_text)
+                try:
+                    os.makedirs(self._cache_dir, exist_ok=True)
+                    with open(cache_path, "w", encoding="utf-8") as fh:
+                        fh.write(raw_text)
+                except Exception:
+                    pass
+                return result
 
             except ValidationError as ve:
                 last_error = ve
@@ -211,10 +395,38 @@ class LLMService:
             except Exception as e:
                 last_error = e
                 err_str = str(e).lower()
-                if "rate" in err_str or "quota" in err_str or "429" in err_str:
-                    logger.warning(f"Rate limit encountered on attempt {attempt + 1}. Waiting 3 seconds...")
-                    time.sleep(3)
-                elif "api_key" in err_str or "credential" in err_str or "unauthenticated" in err_str:
+                if "http 413" in err_str or "request too large" in err_str:
+                    raise LLMServiceError(
+                        f"The request is larger than the {self.provider} per-minute token limit allows, "
+                        "so retrying cannot help. Use a smaller input, a provider/tier with higher limits "
+                        f"(e.g. Azure), or a model with a bigger limit. Details: {str(e)[:300]}"
+                    )
+                if _is_quota_error(e):
+                    delay = _retry_delay_seconds(e)
+                    # Daily quota (or a long server-requested wait): retrying only
+                    # burns more requests. Stop immediately with a clear message.
+                    if _is_daily_quota(e) or delay is None or delay > 90:
+                        raise LLMQuotaExceeded(
+                            "Gemini quota exhausted for this model/project "
+                            f"(model={self.model_name}). Retrying will not help until the "
+                            "quota resets (midnight Pacific time) or you switch LLM_MODEL / "
+                            "enable billing. Details: " + str(e)[:300]
+                        )
+                    logger.warning(f"Per-minute rate limit. Waiting {delay + 1:.0f}s as the API requested.")
+                    time.sleep(delay + 1)
+                elif "deploymentnotfound" in err_str or "http 404" in err_str or "model_not_found" in err_str:
+                    if self.provider == "groq":
+                        raise LLMServiceError(
+                            f"Groq model '{self.model_name}' is not available to your account. Set LLM_MODEL "
+                            "in .env to a model your key can use (list them with the PowerShell command "
+                            f"from the setup notes), then restart the backend. Details: {e}"
+                        )
+                    raise LLMServiceError(
+                        "Azure deployment not found. Check AZURE_OPENAI_DEPLOYMENT (must be the "
+                        f"deployment NAME, not the model name) and AZURE_OPENAI_ENDPOINT. Details: {e}"
+                    )
+                elif "api_key" in err_str or "credential" in err_str or "unauthenticated" in err_str \
+                        or "http 401" in err_str or "access denied" in err_str or "invalid api key" in err_str:
                     logger.error("Authentication failed with Gemini provider.")
                     raise LLMServiceError(f"Authentication failed with LLM provider: {e}")
                 else:
@@ -222,7 +434,7 @@ class LLMService:
                     time.sleep(1)
 
         logger.error(f"LLM service exceeded maximum retries. Last error: {last_error}")
-        raise LLMServiceError(f"Gemini failed to produce valid output after {max_retries} retries: {last_error}")
+        raise LLMServiceError(f"{self.provider} failed to produce valid output after {max_retries} retries: {last_error}")
 
     def _mock_complete_json(self, prompt: str, schema: Type[T]) -> T:
         """Deterministic mock generator for tests and offline runs."""
