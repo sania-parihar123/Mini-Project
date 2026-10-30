@@ -10,6 +10,7 @@ import uuid
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api.documents import UNDERSTANDING_CACHE_VERSION
 from app.core.config import settings
 from app.main import app
 from app.repositories.database import db
@@ -238,6 +239,10 @@ def test_understanding_is_computed_once_per_document_content(client):
 def test_understanding_cache_is_keyed_on_the_content_checksum(client):
     """A different checksum must not be served a stale summary.
 
+    The cache key is ``f"{checksum}|{UNDERSTANDING_CACHE_VERSION}"`` (see
+    documents.py).  The test uses the same constant so that a version bump
+    there automatically keeps this assertion correct without manual edits.
+
     Covers SPEC-03-04.
     """
     headers = _signed_in(client)
@@ -247,8 +252,20 @@ def test_understanding_cache_is_keyed_on_the_content_checksum(client):
                       files={"file": ("sop.txt", DOC, "text/plain")}).json()
 
     client.get(f"/api/documents/{doc['id']}/understanding", headers=headers)
-    assert db.get_document_understanding(doc["id"], doc["checksum"]) is not None
-    assert db.get_document_understanding(doc["id"], "a-different-checksum") is None
+
+    # The API stores the result under a versioned composite key so that bumping
+    # UNDERSTANDING_CACHE_VERSION automatically invalidates every old summary.
+    versioned_key = f"{doc['checksum']}|{UNDERSTANDING_CACHE_VERSION}"
+    assert db.get_document_understanding(doc["id"], versioned_key) is not None, (
+        "understanding was not cached after the first API call"
+    )
+    # A plain different checksum (or old-format key) must never match.
+    assert db.get_document_understanding(doc["id"], doc["checksum"]) is None, (
+        "plain checksum (without version suffix) must not match the versioned cache entry"
+    )
+    assert db.get_document_understanding(doc["id"], "a-different-checksum") is None, (
+        "a different checksum must not be served a stale summary"
+    )
 
 
 def test_an_empty_document_is_an_error_not_a_summary(client):
