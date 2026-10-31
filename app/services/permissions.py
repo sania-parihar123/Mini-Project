@@ -120,6 +120,7 @@ KNOWN_ACTIONS = frozenset({
     "escalate_question",
     "approve_business_rule", "approve_to_be",
     "approve_artifact",
+    "delete_project",
 })
 
 
@@ -149,6 +150,11 @@ def check_permission(action: str, role: str, is_creator: bool = False, artifact_
         if role == "process_owner" or is_creator:
             return
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the Process Owner or project creator can manage team members and invitations.")
+
+    if action == "delete_project":
+        if role == "process_owner" or is_creator:
+            return
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the Process Owner or project creator can delete a project.")
 
     if action == "escalate_question":
         if role != "analyst":

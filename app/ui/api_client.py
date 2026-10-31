@@ -19,7 +19,7 @@ class APIClient:
         # instead of opening/closing a new connection per method call.
         self._client = httpx.Client(
             base_url=self.base_url,
-            timeout=30.0,
+            timeout=180.0,  # large analyses make the rules/traceability reads slow on a remote database
             limits=httpx.Limits(max_connections=20, max_keepalive_connections=10)
         )
 
@@ -102,6 +102,10 @@ class APIClient:
     def get_project(self, token: str, project_id: str) -> Dict[str, Any]:
         resp = self._client.get(f"/api/projects/{project_id}", headers=self._headers(token))
         return self._unwrap(resp, "Project not found.", expected=200)
+
+    def delete_project(self, token: str, project_id: str) -> Dict[str, Any]:
+        resp = self._client.delete(f"/api/projects/{project_id}", headers=self._headers(token))
+        return self._unwrap(resp, "Failed to delete project.", expected=200)
 
     def upload_document(self, token: str, project_id: str, filename: str, content: bytes, mime_type: str) -> Dict[str, Any]:
         files = {"file": (filename, content, mime_type)}

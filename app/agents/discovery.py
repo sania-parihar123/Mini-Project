@@ -1,6 +1,7 @@
 """ProcessFoundry AI: As-Is Process Discovery Agent (A3)."""
 import hashlib
 import logging
+import os
 import re
 from typing import List, Dict, Any, Optional
 
@@ -18,7 +19,50 @@ def evidence_signature(evidence_items: List[Dict[str, Any]]) -> str:
     build a new version" without re-calling the model (finding F6).
     """
     ids = sorted(str(e.get("id")) for e in evidence_items if e.get("id"))
-    return hashlib.sha256("|".join(ids).encode("utf-8")).hexdigest()
+    # "v2": the way evidence is chosen for the model changed, so models built the
+    # old way are treated as out of date and rebuilt as a new version.
+    return hashlib.sha256(("v2|" + "|".join(ids)).encode("utf-8")).hexdigest()
+
+MAX_ITEMS_SIMPLE = 25  # at or below this many items, all of them are used as before
+
+
+def select_evidence_for_prompt(evidence_items: List[Dict[str, Any]], max_chars: int) -> List[Dict[str, Any]]:
+    """Choose which evidence the As-Is model sees.
+
+    This used to be `evidence_items[:25]`: on a real 18-page SOP that meant only
+    the contents page and phase headings were seen, so every step became a phase
+    name with no actor, and the actions described later in the document (who
+    verifies, who generates lots, who signs) never reached the model.
+
+    Now action-bearing claims (step, actor) come first, then other claims, then
+    the rest, each group in document order, until the size budget is used. The
+    chosen items are returned in document order. Very short quotes (headings)
+    are only used if there is room left.
+    """
+    if len(evidence_items) <= MAX_ITEMS_SIMPLE:
+        return evidence_items
+
+    def rank(e: Dict[str, Any]) -> int:
+        ctype = (e.get("claim_type") or "").lower()
+        quote = (e.get("quote") or "").strip()
+        if len(quote) < 20:
+            return 3
+        if ctype in ("step", "actor"):
+            return 0
+        if ctype == "other":
+            return 2
+        return 1
+
+    chosen, used = [], 0
+    for e in sorted(evidence_items, key=lambda x: (rank(x), str(x.get("evidence_key") or ""))):
+        size = len((e.get("quote") or "")) + 4
+        if max_chars and used + size > max_chars:
+            continue
+        chosen.append(e)
+        used += size
+    chosen.sort(key=lambda x: str(x.get("evidence_key") or ""))
+    return chosen
+
 
 class ProcessDiscoveryAgent:
     def discover_as_is(self, project_id: str, evidence_items: List[Dict[str, Any]], process_description: Optional[str] = "") -> Dict[str, Any]:
@@ -46,8 +90,15 @@ class ProcessDiscoveryAgent:
         # Brief 9.2: keep evidence IDs as metadata only. They used to be written
         # into the summarised text, and came back out inside step names
         # ("- [EVD-001] Quote: ..."), which also broke duplicate detection.
+        default_cap = "14000" if llm_service.provider == "groq" else "40000"
+        try:
+            max_chars = int(os.getenv("LLM_ASIS_MAX_CHARS", default_cap))
+        except ValueError:
+            max_chars = 0
+        prompt_evidence = select_evidence_for_prompt(evidence_items, max_chars)
+        logger.info("As-Is prompt uses %d of %d evidence items.", len(prompt_evidence), len(evidence_items))
         evidence_summary = "\n".join([
-            f"- {e['quote']}" for e in evidence_items[:25]
+            f"- {e['quote']}" for e in prompt_evidence
         ])
 
         prompt = (
@@ -57,10 +108,19 @@ class ProcessDiscoveryAgent:
             f"{llm_service.wrap_source(evidence_summary)}\n\n"
             f"CRITICAL RULES:\n"
             f"1. Generate all process names, step names, actor descriptions, and unknowns in ENGLISH.\n"
-            f"2. If a step's source sentence does NOT explicitly name an actor (e.g. 'The form is verified', 'Documents are checked'), "
-            f"you MUST set 'actor': null and add 'actor not stated' to 'unknowns'. DO NOT GUESS OR INVENT AN ACTOR.\n"
+            f"2. The actor is the one who PERFORMS the step. Name an actor only if a quote above says who does it:\n"
+            f"   - active voice: 'NIC will segregate the applications' -> actor 'NIC'.\n"
+            f"   - passive voice: 'applications are verified by the Institute/School' -> actor 'Institute/School'.\n"
+            f"   - two performers: 'the checker and the DDO sign' -> actor 'Checker and DDO'.\n"
+            f"   - the person something is done TO is not the actor: in 'the student is notified' the student is the receiver, so the actor is unknown.\n"
+            f"   You may use a quote from a neighbouring sentence about the same step when the link is clear, "
+            f"but never copy the previous step's actor just because it is nearby. If no quote says who does it "
+            f"(e.g. 'The form is verified', 'Documents are checked'), you MUST set 'actor': null and add 'actor not stated' to 'unknowns'. "
+            f"DO NOT GUESS OR INVENT AN ACTOR.\n"
             f"3. Link each step to its supporting quote from the evidence in its EXACT original language without translation.\n"
-            f"4. Mark repeated or duplicate steps if observed in the source text."
+            f"4. Mark repeated or duplicate steps if observed in the source text.\n"
+            f"5. A step is a concrete action (verify, reject, generate lots, sign, disburse). Do NOT make a step out of a "
+            f"heading, a table-of-contents line or a title; use the actions described under those headings."
         )
 
         try:
