@@ -16,6 +16,7 @@ from app.api.questions import router as questions_router
 from app.api.artifacts import router as artifacts_router
 from app.api.team import router as team_router
 from app.api.traceability import router as traceability_router
+from app.api.prototypes import router as prototypes_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
@@ -99,6 +100,7 @@ app.include_router(questions_router)
 app.include_router(artifacts_router)
 app.include_router(team_router)
 app.include_router(traceability_router)
+app.include_router(prototypes_router)
 
 @app.get("/api/health")
 def health_check():

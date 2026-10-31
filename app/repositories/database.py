@@ -123,6 +123,19 @@ class DatabaseRepository:
                                     'missing_info','duplicate_step','parsing_error',
                                     'technical_conflict','user_question'));
                 """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS prototype_specs (
+                        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        project_id      UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                        spec_fingerprint TEXT NOT NULL,
+                        spec_json       JSONB NOT NULL,
+                        spec_version    INTEGER NOT NULL DEFAULT 1,
+                        generated_by    UUID REFERENCES users(id),
+                        created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        UNIQUE (project_id, spec_version)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_proto_project ON prototype_specs(project_id);
+                """)
 
     def get_connection(self):
         if self.use_postgres:
@@ -487,6 +500,18 @@ class DatabaseRepository:
                 hash TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS prototype_specs (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                spec_fingerprint TEXT NOT NULL,
+                spec_json TEXT NOT NULL,
+                spec_version INTEGER NOT NULL DEFAULT 1,
+                generated_by TEXT REFERENCES users(id),
+                created_at TEXT NOT NULL,
+                UNIQUE (project_id, spec_version)
+            );
+            CREATE INDEX IF NOT EXISTS idx_proto_project ON prototype_specs(project_id);
             """)
 
             # Run SQLite migrations for existing databases
@@ -2980,6 +3005,129 @@ class DatabaseRepository:
             if not r:
                 return None
             return self.get_run(r[0])
+
+    def save_prototype_spec(
+        self,
+        project_id: str,
+        spec_fingerprint: str,
+        spec_json: Dict[str, Any],
+        generated_by: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Save a new version of the interactive prototype spec for a project."""
+        spec_id = str(uuid.uuid4())
+        created_at = now_iso()
+        payload = json.dumps(spec_json)
+        ph = "%s" if self.use_postgres else "?"
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT COALESCE(MAX(spec_version), 0) + 1 FROM prototype_specs WHERE project_id = {ph}",
+                (project_id,),
+            )
+            row = cur.fetchone()
+            next_version = int(row[0]) if row and row[0] is not None else 1
+
+            if self.use_postgres:
+                cur.execute(
+                    """
+                    INSERT INTO prototype_specs (id, project_id, spec_fingerprint, spec_json, spec_version, generated_by, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s);
+                    """,
+                    (spec_id, project_id, spec_fingerprint, payload, next_version, generated_by, created_at),
+                )
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO prototype_specs (id, project_id, spec_fingerprint, spec_json, spec_version, generated_by, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    (spec_id, project_id, spec_fingerprint, payload, next_version, generated_by, created_at),
+                )
+                conn.commit()
+
+        return {
+            "id": spec_id,
+            "project_id": project_id,
+            "spec_fingerprint": spec_fingerprint,
+            "spec_json": spec_json,
+            "spec_version": next_version,
+            "generated_by": generated_by,
+            "created_at": created_at,
+        }
+
+    def get_latest_prototype_spec(self, project_id: str) -> Optional[Dict[str, Any]]:
+        """Return the newest prototype specification for a project, if generated."""
+        ph = "%s" if self.use_postgres else "?"
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                f"""
+                SELECT id, project_id, spec_fingerprint, spec_json, spec_version, generated_by, created_at
+                FROM prototype_specs
+                WHERE project_id = {ph}
+                ORDER BY spec_version DESC
+                LIMIT 1
+                """,
+                (project_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            sid = str(row["id"] if not self.use_postgres else row[0])
+            pid = str(row["project_id"] if not self.use_postgres else row[1])
+            fp = str(row["spec_fingerprint"] if not self.use_postgres else row[2])
+            raw_json = row["spec_json"] if not self.use_postgres else row[3]
+            ver = int(row["spec_version"] if not self.use_postgres else row[4])
+            gen_by = row["generated_by"] if not self.use_postgres else row[5]
+            if gen_by is not None:
+                gen_by = str(gen_by)
+            cat = str(row["created_at"] if not self.use_postgres else row[6])
+
+            s_json = _jload(raw_json, {})
+            return {
+                "id": sid,
+                "project_id": pid,
+                "spec_fingerprint": fp,
+                "spec_json": s_json,
+                "spec_version": ver,
+                "generated_by": gen_by,
+                "created_at": cat,
+            }
+
+    def list_prototype_spec_versions(self, project_id: str) -> List[Dict[str, Any]]:
+        """Return version metadata history for prototype specifications (newest first)."""
+        ph = "%s" if self.use_postgres else "?"
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                f"""
+                SELECT id, project_id, spec_fingerprint, spec_version, generated_by, created_at
+                FROM prototype_specs
+                WHERE project_id = {ph}
+                ORDER BY spec_version DESC
+                """,
+                (project_id,),
+            )
+            rows = cur.fetchall()
+            results = []
+            for r in rows:
+                sid = str(r["id"] if not self.use_postgres else r[0])
+                pid = str(r["project_id"] if not self.use_postgres else r[1])
+                fp = str(r["spec_fingerprint"] if not self.use_postgres else r[2])
+                ver = int(r["spec_version"] if not self.use_postgres else r[3])
+                gen_by = r["generated_by"] if not self.use_postgres else r[4]
+                if gen_by is not None:
+                    gen_by = str(gen_by)
+                cat = str(r["created_at"] if not self.use_postgres else r[5])
+                results.append({
+                    "id": sid,
+                    "project_id": pid,
+                    "spec_fingerprint": fp,
+                    "spec_version": ver,
+                    "generated_by": gen_by,
+                    "created_at": cat,
+                })
+            return results
 
 # Global instance
 db = DatabaseRepository()

@@ -24,6 +24,7 @@ from app.ui.components import (
 )
 from app.ui.api_client import api_client
 from app.services import workflow_preview
+from app.services import prototype_renderer
 
 # -------------------------------------------------------------------------
 # Cached API Client Wrappers (P0 Latency Optimization)
@@ -80,6 +81,14 @@ def fetch_traceability(tok: str, pid: str) -> Dict[str, Any]:
 @st.cache_data(ttl=30, show_spinner=False)
 def fetch_audit_log(tok: str, pid: str) -> List[Dict[str, Any]]:
     return api_client.get_audit_log(tok, pid)
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_prototype_spec(tok: str, pid: str) -> Optional[Dict[str, Any]]:
+    return api_client.get_prototype_spec(tok, pid)
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_prototype_versions(tok: str, pid: str) -> List[Dict[str, Any]]:
+    return api_client.get_prototype_versions(tok, pid)
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_document_understanding(tok: str, doc_id: str, checksum: str) -> Dict[str, Any]:
@@ -350,6 +359,9 @@ with st.sidebar:
             st.rerun()
         if st.button("07  Workflow & Traceability", use_container_width=True):
             st.session_state["active_page"] = "Workflow & Traceability"
+            st.rerun()
+        if st.button("08  Interactive Prototype", use_container_width=True):
+            st.session_state["active_page"] = "Interactive Prototype"
             st.rerun()
 
         if st.button("←  Switch project", use_container_width=True):
@@ -1229,11 +1241,11 @@ elif st.session_state["active_page"] == "Workflow & Traceability":
         render_html('</div>')
 
     # ---------------------------------------------------------------------
-    # Workflow preview and clickable prototype (design doc A11 / Page 7)
-    # Built from the project's own workflow JSON; nothing is saved or sent.
+    # Workflow preview (design doc A11 / Page 7)
+    # Built from the project's own workflow JSON.
     # ---------------------------------------------------------------------
-    st.markdown("### Workflow Preview & Prototype (A11)")
-    render_html("<p style='color:var(--muted);font-size:13.5px;'>Generated from the project's workflow JSON. The prototype is illustrative only: it stores nothing and is not a working system.</p>")
+    st.markdown("### Workflow Preview (A11)")
+    render_html("<p style='color:var(--muted);font-size:13.5px;'>Generated from the project's workflow JSON. The interactive application prototype is available in <b>08 Interactive Prototype</b>.</p>")
     try:
         wf_art = {a["artifact_type"]: a for a in fetch_artifacts(token, pid)}.get("workflow_json")
     except Exception:
@@ -1241,14 +1253,9 @@ elif st.session_state["active_page"] == "Workflow & Traceability":
     wf_data = (wf_art or {}).get("content_json")
     preview = workflow_preview.preview_html(wf_data)
     if not preview:
-        st.info("No workflow yet. Run the analysis and approve the To-Be process to generate the workflow preview and prototype.")
+        st.info("No workflow yet. Run the analysis and approve the To-Be process to generate the workflow preview.")
     else:
-        try:
-            wf_rules = api_client.get_rules(token, pid)
-        except Exception:
-            wf_rules = []
-        proto_html = workflow_preview.prototype_html(wf_data, wf_rules)
-        tab_prev, tab_proto, tab_json = st.tabs(["Workflow diagram", "Clickable prototype", "Workflow JSON"])
+        tab_prev, tab_json = st.tabs(["Workflow diagram", "Workflow JSON"])
         with tab_prev:
             components.html(preview[0], height=min(preview[1] + 40, 760), scrolling=True)
             st.download_button(
@@ -1256,15 +1263,129 @@ elif st.session_state["active_page"] == "Workflow & Traceability":
                 file_name=f"workflow_preview_v{wf_art['version']}.html", mime="text/html",
                 key="dl_wf_preview",
             )
-        with tab_proto:
-            components.html(proto_html, height=720, scrolling=True)
-            st.download_button(
-                "Download prototype (.html)", data=proto_html,
-                file_name=f"prototype_v{wf_art['version']}.html", mime="text/html",
-                key="dl_wf_prototype",
-            )
         with tab_json:
             st.json(wf_data)
+
+# -------------------------------------------------------------------------
+# Page 08: Interactive Prototype (Feature 08)
+# -------------------------------------------------------------------------
+elif st.session_state["active_page"] == "Interactive Prototype":
+    if not active_project:
+        st.warning("Please select a project first.")
+        st.stop()
+    pid = active_project["id"]
+
+    st.markdown("### 08 Interactive Prototype")
+    render_html("<p style='color:var(--muted);font-size:13.5px;'>Interactive application prototype generated from this project's approved requirements and To-Be workflow. Illustrative only: nothing typed is saved or sent anywhere.</p>")
+
+    can_generate = active_project.get("my_role") in ("process_owner", "analyst")
+    proto_resp = fetch_prototype_spec(token, pid)
+
+    col_btn, col_info = st.columns([1, 3])
+    with col_btn:
+        btn_label = "Regenerate Prototype" if proto_resp else "Generate Prototype"
+        if st.button(btn_label, type="primary" if not proto_resp else "secondary", disabled=not can_generate, use_container_width=True):
+            try:
+                with st.spinner("Generating interactive prototype from project requirements and workflow..."):
+                    proto_resp = api_client.regenerate_prototype(token, pid)
+                    st.cache_data.clear()
+                    st.success("Prototype generated successfully!")
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Could not generate prototype: {e}")
+
+    with col_info:
+        if not can_generate:
+            st.caption("Only an Analyst or Process Owner can generate or update the prototype.")
+        elif proto_resp:
+            st.caption(f"Version {proto_resp.get('spec_version', 1)} · Fingerprint: {proto_resp.get('spec_fingerprint', '')[:12]}...")
+
+    if not proto_resp:
+        st.info("No interactive prototype generated yet. Ensure the full analysis workflow has run and the To-Be process is approved, then click 'Generate Prototype' above.")
+    else:
+        spec = proto_resp.get("spec_json", {})
+        screens = spec.get("screens", [])
+        actors = spec.get("actors", [])
+        rules = spec.get("business_rules", [])
+        notices = spec.get("missing_info_notices", [])
+
+        # Stat cards
+        render_html(f"""
+        <div class="pf-stat-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px;">
+            <div class="pf-stat-card"><div class="pf-stat-label">Screens</div><div class="pf-stat-num">{len(screens)}</div></div>
+            <div class="pf-stat-card"><div class="pf-stat-label">Personas / Roles</div><div class="pf-stat-num">{len(actors)}</div></div>
+            <div class="pf-stat-card"><div class="pf-stat-label">Business Rules</div><div class="pf-stat-num">{len(rules)}</div></div>
+            <div class="pf-stat-card"><div class="pf-stat-label">Missing Info Notices</div><div class="pf-stat-num" style="color:{'var(--orange)' if notices else 'var(--teal)'};">{len(notices)}</div></div>
+        </div>
+        """)
+
+        if notices:
+            with st.expander(f"⚠️ Source Ambiguities & Missing Info ({len(notices)})", expanded=False):
+                for n in notices:
+                    st.markdown(f"- {n}")
+
+        rendered_html = prototype_renderer.render_full_prototype(spec)
+
+        tab_proto, tab_cov, tab_json, tab_hist = st.tabs([
+            "Interactive Prototype",
+            "Screen & Requirement Coverage",
+            "Prototype Spec JSON",
+            "Version History",
+        ])
+
+        with tab_proto:
+            components.html(rendered_html, height=820, scrolling=True)
+            col_d1, col_d2 = st.columns([1, 1])
+            with col_d1:
+                st.download_button(
+                    "Download Interactive Prototype (.html)",
+                    data=rendered_html,
+                    file_name=f"{active_project.get('name', 'project')}_prototype_v{proto_resp.get('spec_version', 1)}.html",
+                    mime="text/html",
+                    key="dl_full_proto_html",
+                )
+            with col_d2:
+                st.download_button(
+                    "Download Spec JSON (.json)",
+                    data=json.dumps(spec, indent=2, ensure_ascii=False),
+                    file_name=f"{active_project.get('name', 'project')}_prototype_spec_v{proto_resp.get('spec_version', 1)}.json",
+                    mime="application/json",
+                    key="dl_full_proto_json",
+                )
+
+        with tab_cov:
+            st.markdown("#### Screen to Requirement & Rule Traceability")
+            cov_rows = []
+            for s in screens:
+                cov_rows.append({
+                    "Screen ID": s.get("screen_id"),
+                    "Screen Title": s.get("title"),
+                    "Persona / Actor": s.get("actor") or "Not stated",
+                    "Inputs Count": len(s.get("fields", [])),
+                    "Linked Requirements": ", ".join(s.get("requirement_keys", [])) or "None",
+                    "Linked Business Rules": ", ".join(s.get("business_rule_keys", [])) or "None",
+                })
+            st.dataframe(cov_rows, use_container_width=True)
+
+        with tab_json:
+            st.json(spec)
+
+        with tab_hist:
+            st.markdown("#### Prototype Version History")
+            render_html("<p style='color:var(--muted);font-size:13px;'>Audit record of generated prototype specifications for this project. The latest version is loaded in the interactive prototype view.</p>")
+            proto_versions = fetch_prototype_versions(token, pid)
+            if not proto_versions:
+                st.info("No historical versions found.")
+            else:
+                hist_rows = []
+                for v in proto_versions:
+                    hist_rows.append({
+                        "Version": f"v{v.get('spec_version')}",
+                        "Creation Date": v.get("created_at"),
+                        "Fingerprint": v.get("spec_fingerprint"),
+                        "Status": "Active (Latest)" if v.get("spec_version") == proto_resp.get("spec_version") else "Superseded",
+                    })
+                st.dataframe(hist_rows, use_container_width=True)
 
 # -------------------------------------------------------------------------
 # Page 11: Team & Invitations

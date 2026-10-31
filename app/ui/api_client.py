@@ -234,4 +234,28 @@ class APIClient:
         resp = self._client.get(f"/api/projects/{project_id}/audit", headers=self._headers(token))
         return self._unwrap(resp, "Could not load the audit log.")
 
+    def get_prototype_spec(self, token: str, project_id: str) -> Optional[Dict[str, Any]]:
+        resp = self._client.get(f"/api/projects/{project_id}/prototype", headers=self._headers(token))
+        if resp.status_code == 404:
+            return None
+        return self._unwrap(resp, "Could not load the prototype spec.")
+
+    def regenerate_prototype(self, token: str, project_id: str) -> Dict[str, Any]:
+        resp = self._client.post(f"/api/projects/{project_id}/prototype/generate", headers=self._headers(token))
+        return self._unwrap(resp, "Failed to generate prototype.", expected=200)
+
+    def get_prototype_html(self, token: str, project_id: str) -> Optional[str]:
+        resp = self._client.get(f"/api/projects/{project_id}/prototype/html", headers=self._headers(token))
+        if resp.status_code == 404:
+            return None
+        if resp.status_code != 200:
+            raise APIError(self._detail(resp, "Could not load prototype HTML."), status_code=resp.status_code)
+        return resp.text
+
+    def get_prototype_versions(self, token: str, project_id: str) -> List[Dict[str, Any]]:
+        resp = self._client.get(f"/api/projects/{project_id}/prototype/versions", headers=self._headers(token))
+        if resp.status_code == 404:
+            return []
+        return self._unwrap(resp, "Could not load prototype version history.")
+
 api_client = APIClient()
