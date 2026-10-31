@@ -25,6 +25,7 @@ from app.ui.components import (
 from app.ui.api_client import api_client
 from app.services import workflow_preview
 from app.services import prototype_renderer
+from app.ui.landing import render_landing_page
 
 # -------------------------------------------------------------------------
 # Cached API Client Wrappers (P0 Latency Optimization)
@@ -130,6 +131,19 @@ if "auth_error" not in st.session_state:
     st.session_state["auth_error"] = None
 if "auth_success" not in st.session_state:
     st.session_state["auth_success"] = None
+if "unauth_view" not in st.session_state:
+    st.session_state["unauth_view"] = "landing"
+
+# Check query parameters for initial unauthenticated routing
+_qp_page = st.query_params.get("page", "").lower()
+if _qp_page in ("login", "signin"):
+    st.session_state["unauth_view"] = "auth"
+    st.session_state["auth_mode"] = "signin"
+elif _qp_page in ("signup", "register", "getstarted", "get-started"):
+    st.session_state["unauth_view"] = "auth"
+    st.session_state["auth_mode"] = "signup"
+elif _qp_page in ("landing", "home"):
+    st.session_state["unauth_view"] = "landing"
 
 def sign_out():
     st.cache_data.clear()
@@ -138,13 +152,20 @@ def sign_out():
     st.session_state["active_project_id"] = None
     st.session_state["active_page"] = "My projects"
     st.session_state["auth_mode"] = "signin"
+    st.session_state["unauth_view"] = "landing"
     st.session_state["auth_error"] = None
+    st.query_params.clear()
     st.rerun()
 
 # -------------------------------------------------------------------------
 # Split-Screen Authentication (Section 10.9)
 # -------------------------------------------------------------------------
 def render_auth_screen():
+    if st.button("← Back to ProcessFoundry AI Overview", key="back_to_landing"):
+        st.session_state["unauth_view"] = "landing"
+        st.query_params.clear()
+        st.rerun()
+
     col_left, col_right = st.columns([1, 1.1], gap="large")
 
     with col_left:
@@ -269,11 +290,15 @@ def render_auth_screen():
         """)
 
 # -------------------------------------------------------------------------
-# Signed-In Workspace Frame (Section 10.9)
+# Signed-In Workspace Frame or Public Landing Page
 # -------------------------------------------------------------------------
 if not st.session_state["token"]:
-    render_auth_screen()
-    st.stop()
+    if st.session_state.get("unauth_view", "landing") == "landing":
+        render_landing_page()
+        st.stop()
+    else:
+        render_auth_screen()
+        st.stop()
 
 token = st.session_state["token"]
 
