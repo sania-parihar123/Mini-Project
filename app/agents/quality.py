@@ -23,11 +23,11 @@ class QualityAgent:
 
         Called from the run's quality node only, never from a read path.
         """
-        report = self._compute_report(project_id)
+        report = self._compute_report(project_id, with_documents=True)
         self._write_artifacts(project_id, report)
         return report
 
-    def _compute_report(self, project_id: str) -> Dict[str, Any]:
+    def _compute_report(self, project_id: str, with_documents: bool = False) -> Dict[str, Any]:
         """Compute end-to-end traceability matrix and audit relational integrity."""
         requirements = db.list_project_requirements(project_id)
         test_cases = db.list_project_test_cases(project_id)
@@ -35,10 +35,13 @@ class QualityAgent:
         questions = db.list_project_clarification_items(project_id)
 
         # 1. Audit quotes: verify each quote is in its section
+        # One query for all the sections, not one query per evidence item: this
+        # runs on every traceability page view, on a possibly remote database.
+        section_texts = db.get_section_texts([ev["document_section_id"] for ev in evidence])
         quote_mismatches = 0
         for ev in evidence:
-            sec = db.get_section(ev["document_section_id"])
-            if not sec or ev["quote"] not in sec["text"]:
+            text = section_texts.get(str(ev["document_section_id"]))
+            if text is None or ev["quote"] not in text:
                 quote_mismatches += 1
 
         # 2. Check requirements without evidence or rules.
@@ -135,11 +138,14 @@ All document uploads stored in server-generated paths. Untrusted text wrapped in
 """
         # Process-specific HLD and data model from the approved steps. The older
         # fixed text is kept as an appendix (or used alone with no steps).
-        pv = db.get_latest_process_version(project_id)
-        pa_steps = pv.get("steps", []) if pv else []
-        pa_rules = db.list_project_business_rules(project_id)
-        hld_md = process_artifacts.hld_md(project, pa_steps, pa_rules, process_artifacts.as_appendix(hld_md)) or hld_md
-        erd_md = process_artifacts.data_model_md(project, pa_steps, pa_rules, process_artifacts.as_appendix(erd_md)) or erd_md
+        # Only when the documents are about to be saved. The read-only traceability
+        # page also calls this method, and must not pay for rebuilding them.
+        if with_documents:
+            pv = db.get_latest_process_version(project_id)
+            pa_steps = pv.get("steps", []) if pv else []
+            pa_rules = db.list_project_business_rules(project_id)
+            hld_md = process_artifacts.hld_md(project, pa_steps, pa_rules, process_artifacts.as_appendix(hld_md)) or hld_md
+            erd_md = process_artifacts.data_model_md(project, pa_steps, pa_rules, process_artifacts.as_appendix(erd_md)) or erd_md
 
         return {
             "documents": {

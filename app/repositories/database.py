@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -925,6 +926,129 @@ class DatabaseRepository:
                 cur.execute("UPDATE project_members SET status = 'removed' WHERE project_id = ? AND user_id = ?", (project_id, user_id))
                 conn.commit()
 
+    def delete_project(self, project_id: str) -> Optional[Dict[str, Any]]:
+        """Permanently delete a project, all its child database records across all tables,
+        and its stored files on disk within a single safe transaction.
+        """
+        ph = "%s" if self.use_postgres else "?"
+        storage_paths: List[str] = []
+        project_name: str = ""
+
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            # 1. Verify project exists
+            cur.execute(f"SELECT id, name FROM projects WHERE id = {ph};", (project_id,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            project_name = row["name"] if not self.use_postgres else row[1]
+
+            # 2. Collect storage paths of all uploaded documents for this project
+            cur.execute(f"SELECT storage_path FROM documents WHERE project_id = {ph};", (project_id,))
+            doc_rows = cur.fetchall()
+            storage_paths = [r["storage_path"] if not self.use_postgres else r[0] for r in doc_rows if (r["storage_path"] if not self.use_postgres else r[0])]
+
+            # 3. Safely delete all project-owned and child rows in strict reverse-dependency order
+            try:
+                # Audit events (disable Postgres append-only trigger if present)
+                if self.use_postgres:
+                    try:
+                        cur.execute("ALTER TABLE audit_events DISABLE TRIGGER audit_events_no_update;")
+                        cur.execute("DELETE FROM audit_events WHERE project_id = %s;", (project_id,))
+                        cur.execute("ALTER TABLE audit_events ENABLE TRIGGER audit_events_no_update;")
+                    except Exception:
+                        cur.execute("DELETE FROM audit_events WHERE project_id = %s;", (project_id,))
+                else:
+                    cur.execute(f"DELETE FROM audit_events WHERE project_id = {ph};", (project_id,))
+
+                # Approvals, Agent Runs, Test Cases
+                cur.execute(f"DELETE FROM approvals WHERE project_id = {ph};", (project_id,))
+                cur.execute(f"DELETE FROM agent_runs WHERE project_id = {ph};", (project_id,))
+                cur.execute(f"DELETE FROM test_cases WHERE project_id = {ph};", (project_id,))
+
+                # Requirements and Requirement Links
+                cur.execute(f"DELETE FROM requirement_links WHERE requirement_id IN (SELECT id FROM requirements WHERE project_id = {ph});", (project_id,))
+                cur.execute(f"DELETE FROM requirements WHERE project_id = {ph};", (project_id,))
+
+                # Artifacts and Artifact Links
+                cur.execute(f"DELETE FROM artifact_links WHERE artifact_id IN (SELECT id FROM artifacts WHERE project_id = {ph});", (project_id,))
+                cur.execute(f"DELETE FROM artifacts WHERE project_id = {ph};", (project_id,))
+
+                # Verified Facts
+                cur.execute(f"DELETE FROM verified_facts WHERE project_id = {ph};", (project_id,))
+
+                # Clarifications and Clarification Links/Answers
+                cur.execute(f"DELETE FROM clarification_answers WHERE clarification_id IN (SELECT id FROM clarification_items WHERE project_id = {ph});", (project_id,))
+                cur.execute(f"DELETE FROM clarification_links WHERE clarification_id IN (SELECT id FROM clarification_items WHERE project_id = {ph});", (project_id,))
+                cur.execute(f"DELETE FROM clarification_items WHERE project_id = {ph};", (project_id,))
+
+                # Runs
+                cur.execute(f"DELETE FROM runs WHERE project_id = {ph};", (project_id,))
+
+                # Business Rules and Rule-Evidence links (break self-referencing supersedes_rule_id first)
+                cur.execute(f"DELETE FROM rule_evidence WHERE rule_id IN (SELECT id FROM business_rules WHERE project_id = {ph});", (project_id,))
+                cur.execute(f"UPDATE business_rules SET supersedes_rule_id = NULL WHERE project_id = {ph};", (project_id,))
+                cur.execute(f"DELETE FROM business_rules WHERE project_id = {ph};", (project_id,))
+
+                # Process Model: Transitions, Step-Evidence, Steps, Versions
+                cur.execute(f"DELETE FROM step_transitions WHERE process_version_id IN (SELECT id FROM process_versions WHERE project_id = {ph});", (project_id,))
+                cur.execute(f"DELETE FROM step_evidence WHERE step_id IN (SELECT id FROM process_steps WHERE process_version_id IN (SELECT id FROM process_versions WHERE project_id = {ph}));", (project_id,))
+                cur.execute(f"DELETE FROM process_steps WHERE process_version_id IN (SELECT id FROM process_versions WHERE project_id = {ph});", (project_id,))
+                cur.execute(f"DELETE FROM process_versions WHERE project_id = {ph};", (project_id,))
+
+                # Evidence Items (must be deleted before document_sections)
+                cur.execute(f"DELETE FROM evidence_items WHERE project_id = {ph};", (project_id,))
+
+                # Documents and Document Sections/Chunks/Understanding
+                cur.execute(f"DELETE FROM document_understanding WHERE document_id IN (SELECT id FROM documents WHERE project_id = {ph});", (project_id,))
+                cur.execute(f"DELETE FROM document_chunks WHERE project_id = {ph};", (project_id,))
+                cur.execute(f"DELETE FROM document_sections WHERE document_id IN (SELECT id FROM documents WHERE project_id = {ph});", (project_id,))
+                cur.execute(f"DELETE FROM documents WHERE project_id = {ph};", (project_id,))
+
+                # Counters, Invitations, Members, and Project Row
+                cur.execute(f"DELETE FROM project_counters WHERE project_id = {ph};", (project_id,))
+                cur.execute(f"DELETE FROM project_invitations WHERE project_id = {ph};", (project_id,))
+                cur.execute(f"DELETE FROM project_members WHERE project_id = {ph};", (project_id,))
+                cur.execute(f"DELETE FROM projects WHERE id = {ph};", (project_id,))
+
+                if not self.use_postgres:
+                    conn.commit()
+            except Exception as e:
+                if not self.use_postgres:
+                    conn.rollback()
+                logger.error("Failed to delete project %s from database: %s", project_id, e)
+                raise
+
+        # 4. Safely clean up exclusively associated project files after DB transaction commit
+        cleaned_files = 0
+        try:
+            base_upload_dir = Path(settings.upload_dir).resolve()
+            for sp in storage_paths:
+                if not sp:
+                    continue
+                try:
+                    p = Path(sp).resolve()
+                    # Verify path is inside base_upload_dir and contains project_id
+                    if (base_upload_dir in p.parents or p.is_relative_to(base_upload_dir)) and project_id in str(p):
+                        if p.exists() and p.is_file():
+                            p.unlink(missing_ok=True)
+                            cleaned_files += 1
+                except Exception as file_err:
+                    logger.warning("Failed to clean up file %s: %s", sp, file_err)
+
+            proj_dir = (base_upload_dir / project_id).resolve()
+            if (base_upload_dir in proj_dir.parents or proj_dir.parent == base_upload_dir) and proj_dir.exists() and proj_dir.is_dir():
+                shutil.rmtree(proj_dir, ignore_errors=True)
+        except Exception as dir_err:
+            logger.warning("Failed to remove project upload directory %s: %s", project_id, dir_err)
+
+        return {
+            "deleted": True,
+            "project_id": project_id,
+            "name": project_name,
+            "cleaned_files": cleaned_files
+        }
+
     # ----------------------------------------------------
     # Invitations
     # ----------------------------------------------------
@@ -1546,6 +1670,31 @@ class DatabaseRepository:
                         "read_from_image": read_img
                     })
             return result
+
+    def get_section_texts(self, section_ids: List[str]) -> Dict[str, str]:
+        """Section id -> full text for many sections in ONE query (not one per id).
+
+        Used by read paths that only need the text, e.g. the quote audit, where
+        asking for sections one at a time costs a network round trip each.
+        """
+        ids = [str(i) for i in dict.fromkeys(section_ids) if i]
+        out: Dict[str, str] = {}
+        if not ids:
+            return out
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            if self.use_postgres:
+                cur.execute("SELECT id, text FROM document_sections WHERE id::text = ANY(%s)", (ids,))
+                for r in cur.fetchall():
+                    out[str(r[0])] = r[1]
+            else:
+                for i in range(0, len(ids), 500):  # stay under SQLite's variable limit
+                    chunk = ids[i:i + 500]
+                    marks = ",".join("?" for _ in chunk)
+                    cur.execute(f"SELECT id, text FROM document_sections WHERE id IN ({marks})", chunk)
+                    for r in cur.fetchall():
+                        out[str(r[0])] = r[1]
+        return out
 
     def get_section(self, section_id: str) -> Optional[Dict[str, Any]]:
         with self.get_connection() as conn:

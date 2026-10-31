@@ -378,6 +378,39 @@ with st.sidebar:
 # Render Sticky Topbar
 render_topbar(user, active_project, current_page=st.session_state["active_page"])
 
+@st.dialog("Delete Project")
+def render_delete_project_dialog(proj: Dict[str, Any], user_token: str):
+    name = proj.get("name", "Project")
+    st.markdown(
+        f"Are you sure you want to delete **{name}**?\n\n"
+        "⚠️ **Warning:** This action is permanent and cannot be undone. "
+        "Deleting this project will permanently remove all associated data, including:\n"
+        "- Uploaded documents and stored disk files\n"
+        "- Extracted evidence and section text\n"
+        "- As-Is and To-Be process models and steps\n"
+        "- Business rules and rule-evidence links\n"
+        "- Clarification questions, answers, and verified facts\n"
+        "- Requirements and traceability matrices\n"
+        "- Generated artifacts (BRD, PRD, SRS, etc.)\n"
+        "- Test cases, review approvals, and agent runs\n"
+        "- Project team memberships and invitations"
+    )
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        if st.button("Cancel", key=f"cancel_delete_{proj['id']}", use_container_width=True):
+            st.rerun()
+    with col2:
+        if st.button("Delete Project", key=f"confirm_delete_{proj['id']}", type="primary", use_container_width=True):
+            try:
+                api_client.delete_project(user_token, proj["id"])
+                if st.session_state.get("active_project_id") == proj["id"]:
+                    st.session_state["active_project_id"] = None
+                st.cache_data.clear()
+                st.toast(f"Project '{name}' was successfully deleted.", icon="🗑️")
+                st.rerun()
+            except Exception as e:
+                st.error(str(e))
+
 # -------------------------------------------------------------------------
 # Page 1: My Projects
 # -------------------------------------------------------------------------
@@ -448,7 +481,7 @@ if st.session_state["active_page"] == "My projects":
         """)
     else:
         for p in projects:
-            p_col1, p_col2, p_col3, p_col4 = st.columns([3, 2, 1.5, 1])
+            p_col1, p_col2, p_col3, p_col4, p_col5 = st.columns([3, 1.8, 1.2, 1, 0.5])
             with p_col1:
                 code = "".join([w[0] for w in p["name"].split()[:2]]).upper() or "PR"
                 render_html(f"""
@@ -471,6 +504,11 @@ if st.session_state["active_page"] == "My projects":
                     st.session_state["active_project_id"] = p["id"]
                     st.session_state["active_page"] = "Overview & Uploads"
                     st.rerun()
+            with p_col5:
+                with st.popover("⋮", help="Project options"):
+                    render_html("<div style='font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;margin-bottom:6px;'>Options</div>")
+                    if st.button("🗑️ Delete Project", key=f"del_opt_{p['id']}", use_container_width=True):
+                        render_delete_project_dialog(p, token)
 
     render_html('</div>')
 

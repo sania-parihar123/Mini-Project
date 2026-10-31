@@ -265,6 +265,11 @@ def extract_values(text: str, subject: Optional[str]) -> List[str]:
         for match in re.finditer(pattern, source, re.IGNORECASE):
             value = match.group(0).strip()
             key = _norm(value)
+            # A bare four-digit year (2017, 1988) names a period or a law, it is
+            # not a deadline, fee or limit, so it is never compared as a value.
+            if kind == "number" and re.fullmatch(r"[0-9]{4}", _to_ascii_digits(value)) \
+                    and 1900 <= int(_to_ascii_digits(value)) <= 2100:
+                continue
             if value and key not in seen:
                 seen.add(key)
                 found.append(value)
@@ -363,6 +368,10 @@ class GapAnalysisAgent:
             step_name = step.get("name", "Unnamed Step")
             step_key = step.get("step_key", "Step")
             sources = db.get_step_sources(step["id"])
+            # A step whose only source is its own heading (e.g. a phase title) has
+            # no action text to name an actor in; the real actions are separate steps.
+            if sources and _norm(sources[0].get("quote")) == _norm(step_name):
+                continue
             fp = fingerprint(
                 "missing_actor",
                 _source_key(sources[0] if sources else None),
@@ -475,7 +484,9 @@ class GapAnalysisAgent:
             src = (rule.get("sources") or [{}])[0]
             doc = src.get("document_name") or rule.get("document_name") or "the source document"
             sec = src.get("section_title") or rule.get("section_title") or "an untitled section"
-            quote = src.get("quote") or (rule.get("evidence_quotes") or [rule.get("description")])[0]
+            # Only real source text may be shown as a quote. The rule's own
+            # description is the model's wording, so it is never used here.
+            quote = src.get("quote") or (rule.get("evidence_quotes") or [None])[0]
             options.append({
                 "label": value,
                 "letter": _letter(index),
@@ -527,9 +538,12 @@ class GapAnalysisAgent:
     # -- Check 3: vague terms ------------------------------------------------
     def _check_ambiguous_terms(self, project_id, evidence_items, ev_sources, run_id) -> List[Dict[str, Any]]:
         created = []
+        asked_terms = set()   # one question per term; the answer defines it everywhere
         for ev in evidence_items:
             quote_lower = (ev.get("quote") or "").lower()
             for term in VAGUE_TERMS:
+                if term in asked_terms:
+                    continue
                 if not re.search(rf"(?<![\w\u0900-\u097F]){re.escape(term)}(?![\w\u0900-\u097F])", quote_lower):
                     continue
                 src = ev_sources.get(str(ev["id"]), {})
@@ -575,6 +589,7 @@ class GapAnalysisAgent:
                     run_id=run_id,
                     link_targets=[("evidence", ev["id"])],
                 ))
+                asked_terms.add(term)
                 break  # at most one vague term per evidence item
         return created
 
@@ -587,7 +602,10 @@ class GapAnalysisAgent:
         """
         created = []
         for step in process_steps:
-            unknowns = [u for u in (step.get("unknowns") or []) if u != "actor not stated"]
+            unknowns = [
+                u for u in (step.get("unknowns") or [])
+                if u != "actor not stated" and "duplicate step" not in str(u).lower()
+            ]
             if not unknowns:
                 continue
             step_key = step.get("step_key", "Step")
@@ -651,6 +669,10 @@ class GapAnalysisAgent:
             src = ev_sources.get(str(ev["id"]), {})
             if src.get("section_index") is None:
                 continue
+            # Rules, dates, deadlines and fees repeated in the text are not a step
+            # done twice; conflicting values are caught by the rule checks.
+            if (ev.get("claim_type") or "other") in ("rule", "date", "deadline", "fee"):
+                continue
             candidates.append((ev, src, key, set(key.split())))
 
         used = set()
@@ -670,6 +692,11 @@ class GapAnalysisAgent:
                     used.add(j)
             if len(cluster) > 1:
                 used.add(i)
+                # Text that recurs in five or more sections is a running header or
+                # a title, not a step, so it is not worth a question.
+                distinct_sections = {c[1].get("section_index") for c in cluster}
+                if len(distinct_sections) >= 5:
+                    continue
                 clusters.append(cluster)
 
         created = []
